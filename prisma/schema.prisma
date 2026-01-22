@@ -1,0 +1,89 @@
+generator client {
+    provider = "prisma-client-js"
+    binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x"]
+    output = "/home/ubuntu/quality_tier_classifier/nextjs_space/node_modules/.prisma/client"
+}
+
+datasource db {
+    provider = "postgresql"
+    url      = env("DATABASE_URL")
+}
+
+model AnalysisRun {
+  id          String   @id @default(cuid())
+  name        String?
+  startDate   String
+  endDate     String
+  fileName    String?
+  totalRecords Int
+  promoteCount Int    @default(0)
+  demoteCount  Int    @default(0)
+  belowMinCount Int   @default(0)
+  correctCount Int    @default(0)
+  reviewCount  Int    @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  results     ClassificationResult[]
+}
+
+model ClassificationResult {
+  id                String @id @default(cuid())
+  runId             String
+  run               AnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  subId             String
+  vertical          String
+  trafficType       String
+  currentTier       Int?
+  currentTierLabel  String?
+  recommendedTier   String
+  recommendedTierNum Int?
+  action            String
+  actionLabel       String
+  channel           String?
+  placement         String?
+  description       String?
+  sourceName        String?
+  mediaTypeName     String?
+  campaignType      String?
+  totalCalls        Int      @default(0)
+  callsOverThreshold Int     @default(0)
+  callQualityRate   Float?
+  totalLeads        Int      @default(0)
+  totalClicks       Int      @default(0)
+  leadCtrRate       Float?
+  totalRevenue      Float    @default(0)
+  classificationReason String?
+  premiumMin        Float?
+  standardMin       Float?
+  createdAt         DateTime @default(now())
+
+  @@index([runId])
+  @@index([action])
+  @@index([vertical])
+}
+
+model ActionHistory {
+  id              String   @id @default(cuid())
+  subId           String
+  vertical        String
+  trafficType     String
+  mediaType       String?  // Media type for filtering
+  actionTaken     String   // promote, demote, pause, below, maintain, review
+  actionLabel     String   // Human-readable label
+  previousState   String?  // Premium, Standard, Below Standard, etc.
+  newState        String?  // Premium, Standard, Below Standard, PAUSED, etc.
+  metricMode      String?  // call, lead, both
+  callQuality     Float?
+  leadQuality     Float?
+  totalRevenue    Float?
+  notes           String?  // Optional notes from user
+  takenBy         String?  // User who took action (optional)
+  createdAt       DateTime @default(now())
+
+  @@index([subId])
+  @@index([actionTaken])
+  @@index([createdAt])
+  @@index([vertical])
+  @@index([trafficType])
+  @@index([takenBy])
+}

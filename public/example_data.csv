@@ -1,0 +1,11 @@
+subid,internal_channel,traffic_type,vertical,channel,description,source_name,media_type_name,campaign_type,total_calls,paid_calls,calls_over_threshold,call_revenue,total_leads_dialed,leads_transferred,lead_revenue,click_volume,click_revenue,redirect_volume,redirect_revenue,total_revenue
+SUB001,Premium,Full O&O,Medicare,Digital,Premium Medicare Campaign,Google Ads,Search,Acquisition,1500,1200,1125,45000,800,640,24000,5000,15000,3200,9600,93600
+SUB002,Standard,Partial O&O,Health,Digital,Health Insurance Lead Gen,Facebook,Social,Branding,950,700,712,21000,600,420,12600,3500,8750,2100,5250,47600
+SUB003,,Non O&O,Auto,Digital,Auto Insurance Quotes,Bing Ads,Search,Acquisition,2200,1800,1650,54000,1100,715,21450,7000,17500,4500,11250,104200
+SUB004,Premium,Full O&O,Home,Digital,Home Insurance Premium,Direct Mail,Display,Retention,800,600,640,18000,400,340,10200,2000,5000,1300,3250,36450
+SUB005,Standard,Partial O&O,Life,Digital,Life Insurance Leads,LinkedIn,Social,Acquisition,1100,900,825,27000,550,385,11550,4000,10000,2600,6500,55050
+SUB006,Premium,Full O&O,Medicare,TV,Medicare TV Campaign,NBC,Broadcast,Awareness,3000,2500,2400,75000,1500,1200,36000,10000,25000,6500,16250,152250
+SUB007,,Non O&O,Health,Digital,Affiliate Health Leads,Affiliate Network,Native,Performance,450,350,315,10500,250,150,4500,1500,3750,950,2375,21125
+SUB008,Standard,Partial O&O,Auto,Digital,Auto Quote Comparison,Progressive,Display,Acquisition,1800,1400,1260,42000,900,630,18900,6000,15000,3800,9500,85400
+SUB009,Premium,Full O&O,Home,Digital,Premium Home Direct,AllState,Email,Retention,650,500,520,15000,325,276,8280,1800,4500,1100,2750,30530
+SUB010,Standard,Partial O&O,Life,Digital,Term Life Campaign,MetLife,Search,Acquisition,1300,1000,910,30000,650,455,13650,4500,11250,2900,7250,62150
