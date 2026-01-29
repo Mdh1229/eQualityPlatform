@@ -216,8 +216,12 @@ def mock_database(mock_db_pool: AsyncMock) -> Generator[AsyncMock, None, None]:
     # Patch at the location where the function is imported and used
     # (not at the source module, because the import creates a local reference)
     # Use AsyncMock to properly mock the async function so await get_db_pool() returns the pool
-    with patch('backend.services.ingestion.get_db_pool', new=AsyncMock(return_value=mock_db_pool)):
-        yield mock_db_pool
+    # Patch at ALL usage locations since each module imports the function into its namespace
+    with patch('backend.core.database.get_db_pool', new=AsyncMock(return_value=mock_db_pool)):
+        with patch('backend.services.ingestion.get_db_pool', new=AsyncMock(return_value=mock_db_pool)):
+            with patch('backend.jobs.daily_memo.get_db_pool', new=AsyncMock(return_value=mock_db_pool)):
+                with patch('backend.jobs.slack_digest.get_db_pool', new=AsyncMock(return_value=mock_db_pool)):
+                    yield mock_db_pool
 
 
 # ============================================================
@@ -277,8 +281,14 @@ def mock_settings() -> Generator[Mock, None, None]:
     settings.warning_window_days = 14
     settings.unspecified_keep_fillrate_threshold = 0.90
     
+    # Patch at source AND usage locations
+    # When modules do "from backend.core.config import get_settings", they bind
+    # the function to their local namespace at import time. We need to patch
+    # at both the source and all usage locations.
     with patch('backend.core.config.get_settings', return_value=settings):
-        yield settings
+        with patch('backend.jobs.daily_memo.get_settings', return_value=settings):
+            with patch('backend.jobs.slack_digest.get_settings', return_value=settings):
+                yield settings
 
 
 # ============================================================

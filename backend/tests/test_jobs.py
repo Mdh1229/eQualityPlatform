@@ -886,7 +886,7 @@ class TestVerticalEnumeration:
     enumerated and can be used with job functions.
     """
 
-    def test_all_verticals_defined(self) -> None:
+    async def test_all_verticals_defined(self) -> None:
         """
         Test that all expected verticals are defined in Vertical enum.
         
@@ -898,7 +898,7 @@ class TestVerticalEnumeration:
         
         assert actual_verticals == expected_verticals
 
-    def test_vertical_enum_members_accessible(self) -> None:
+    async def test_vertical_enum_members_accessible(self) -> None:
         """
         Test that Vertical enum members can be accessed by name.
         
@@ -967,6 +967,13 @@ class TestIdempotencyGuarantees:
         
         # First call: memo doesn't exist, should upload
         # Second call: memo exists, should skip
+        # 
+        # Call order for generate_daily_memo:
+        # 1. check_memo_exists (fetchrow)
+        # 2. fetch_vertical_classification_data (fetch - not fetchrow)
+        # 3. fetch_insights_summary anomaly_query (fetchrow)
+        # 4. fetch_insights_summary change_point_query (fetchrow)
+        # 5. mark_memo_uploaded (fetchrow)
         call_count = [0]
         
         def fetchrow_side_effect(*args, **kwargs):
@@ -975,9 +982,12 @@ class TestIdempotencyGuarantees:
                 # First check_memo_exists call: not exists
                 return {'exists': False}
             elif call_count[0] == 2:
-                # fetch_insights_summary anomaly
+                # fetch_insights_summary anomaly_query
                 return {'count': 0}
             elif call_count[0] == 3:
+                # fetch_insights_summary change_point_query
+                return {'count': 0}
+            elif call_count[0] == 4:
                 # mark_memo_uploaded
                 return {
                     'vertical': 'Medicare',
@@ -985,7 +995,7 @@ class TestIdempotencyGuarantees:
                     'drive_file_id': 'file-id-1',
                     'uploaded_at': date.today()
                 }
-            elif call_count[0] == 4:
+            elif call_count[0] == 5:
                 # Second check_memo_exists call: now exists
                 return {'exists': True}
             else:
