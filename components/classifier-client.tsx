@@ -15,6 +15,9 @@ const STORAGE_KEY = 'quality_classifier_state';
 // Debounce timeout for persisting state
 let persistTimeout: NodeJS.Timeout | null = null;
 
+// Feed type for A/B/C validation per Section 0.4.1 and 0.8.3
+export type FeedType = 'feed_a' | 'feed_b' | 'feed_c' | 'legacy';
+
 interface ColumnMapping {
   [key: string]: string;
 }
@@ -135,6 +138,7 @@ export default function ClassifierClient() {
   const [dimension, setDimension] = useState<AggregationDimension>('sub_id');
   const [originalRecordCount, setOriginalRecordCount] = useState<number>(0);
   const [isHydrated, setIsHydrated] = useState(false);
+  const [feedType, setFeedType] = useState<FeedType>('legacy');
   const isRestored = useRef(false);
   const canPersist = useRef(false);
 
@@ -156,6 +160,7 @@ export default function ClassifierClient() {
         if (parsed.fileName) setFileName(parsed.fileName);
         if (parsed.dimension) setDimension(parsed.dimension);
         if (typeof parsed.originalRecordCount === 'number') setOriginalRecordCount(parsed.originalRecordCount);
+        if (parsed.feedType) setFeedType(parsed.feedType);
       }
       isRestored.current = true;
     } catch (e) {
@@ -192,7 +197,8 @@ export default function ClassifierClient() {
           stats,
           fileName,
           dimension,
-          originalRecordCount
+          originalRecordCount,
+          feedType
         };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(stateToSave));
       } catch (e) {
@@ -205,7 +211,7 @@ export default function ClassifierClient() {
         clearTimeout(persistTimeout);
       }
     };
-  }, [step, csvData, columns, columnMapping, results, stats, fileName, dimension, originalRecordCount]);
+  }, [step, csvData, columns, columnMapping, results, stats, fileName, dimension, originalRecordCount, feedType]);
 
   const autoMapColumns = useCallback((cols: string[]) => {
     const mapping: ColumnMapping = {};
@@ -223,9 +229,10 @@ export default function ClassifierClient() {
     return mapping;
   }, []);
 
-  const handleFileSelect = useCallback((file: File) => {
+  const handleFileSelect = useCallback((file: File, selectedFeedType: FeedType = 'legacy') => {
     setFileName(file?.name ?? '');
     setError(null);
+    setFeedType(selectedFeedType);
     
     Papa.parse(file, {
       header: true,
@@ -576,6 +583,7 @@ export default function ClassifierClient() {
           <MappingStep
             columns={columns}
             columnMapping={columnMapping}
+            feedType={feedType}
             onMappingChange={setColumnMapping}
             onBack={() => setStep('upload')}
             onAnalyze={handleAnalyze}
