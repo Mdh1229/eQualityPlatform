@@ -330,9 +330,9 @@ async def create_action(
 
 @router.get("/", response_model=dict)
 async def list_actions(
+    db: DBSessionDep,
     subId: Optional[str] = Query(default=None, description="Filter by sub ID"),
     limit: int = Query(default=DEFAULT_LIST_LIMIT, le=MAX_LIST_LIMIT, description="Maximum records to return"),
-    db: DBSessionDep = None,
 ) -> dict:
     """
     List action history records with optional filtering.
