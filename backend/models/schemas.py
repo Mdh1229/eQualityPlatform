@@ -1816,8 +1816,7 @@ class OpportunityItem(BaseModel):
     )
     potentialRevenue: float = Field(
         ...,
-        ge=0.0,
-        description="Potential revenue from opportunity"
+        description="Potential revenue impact from opportunity (negative for revenue at risk/loss scenarios like Pause)"
     )
     recommendedAction: str = Field(
         ...,
