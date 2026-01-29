@@ -213,7 +213,10 @@ def mock_database(mock_db_pool: AsyncMock) -> Generator[AsyncMock, None, None]:
         The patch is applied at 'backend.core.database.get_db_pool' to ensure
         all imports of get_db_pool use the mock.
     """
-    with patch('backend.core.database.get_db_pool', return_value=mock_db_pool):
+    # Patch at the location where the function is imported and used
+    # (not at the source module, because the import creates a local reference)
+    # Use AsyncMock to properly mock the async function so await get_db_pool() returns the pool
+    with patch('backend.services.ingestion.get_db_pool', new=AsyncMock(return_value=mock_db_pool)):
         yield mock_db_pool
 
 
@@ -414,8 +417,11 @@ def mock_bigquery_client() -> Generator[Mock, None, None]:
     # Create mock QueryJob
     query_job = Mock()
     
-    # Default empty result set (tests can override)
-    query_job.result = Mock(return_value=[])
+    # Create a mock RowIterator that has to_dataframe() method
+    # Default empty result set (tests can override via client.query.return_value.result.return_value.to_dataframe.return_value)
+    row_iterator = Mock()
+    row_iterator.to_dataframe = Mock(return_value=pd.DataFrame())  # Default empty DataFrame
+    query_job.result = Mock(return_value=row_iterator)
     
     # Configure query() to return the mock job
     client.query = Mock(return_value=query_job)
@@ -496,7 +502,7 @@ def sample_feed_b_data(sample_feed_a_data: pd.DataFrame) -> pd.DataFrame:
     date_et + vertical + traffic_type + tier + subid + tx_family + slice_name + slice_value
     
     Extends Feed A with slice dimensions for driver analysis:
-    - tx_family: Transaction family (call, lead, click, redirect)
+    - tx_family: Transaction family (calls, leads, clicks, redirects)
     - slice_name: Dimension name (ad_source, keyword, domain, etc.)
     - slice_value: Dimension value
     - fill_rate_by_rev: Data coverage metric
@@ -508,7 +514,7 @@ def sample_feed_b_data(sample_feed_a_data: pd.DataFrame) -> pd.DataFrame:
         pd.DataFrame: Sample Feed B data with slice dimensions
         
     Data Characteristics:
-        - tx_family: call, lead (covers main transaction types)
+        - tx_family: calls, leads (covers main transaction types per TxFamily enum)
         - slice_name: ad_source, keyword (covers common dimensions)
         - fill_rate_by_rev: Various values for Smart Unspecified testing
         
@@ -517,7 +523,7 @@ def sample_feed_b_data(sample_feed_a_data: pd.DataFrame) -> pd.DataFrame:
             assert 'tx_family' in sample_feed_b_data.columns
     """
     df = sample_feed_a_data.copy()
-    df['tx_family'] = ['call', 'lead', 'call']
+    df['tx_family'] = ['calls', 'leads', 'calls']  # TxFamily enum uses plural values
     df['slice_name'] = ['ad_source', 'keyword', 'ad_source']
     df['slice_value'] = ['google.com', 'medicare plans', 'bing.com']
     df['fill_rate_by_rev'] = [0.85, 0.92, 0.78]

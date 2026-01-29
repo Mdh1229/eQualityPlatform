@@ -177,8 +177,8 @@ def validate_columns(
     errors: List[ValidationError] = []
     required_columns = _get_required_columns(feed_type)
     
-    # Check for missing columns
-    df_columns = set(df.columns.str.lower())
+    # Check for missing columns (normalize by stripping whitespace and lowercasing)
+    df_columns = set(df.columns.str.strip().str.lower())
     for col in required_columns:
         if col.lower() not in df_columns:
             errors.append(ValidationError(

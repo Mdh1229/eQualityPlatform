@@ -110,7 +110,7 @@ def valid_feed_a_df() -> pd.DataFrame:
 def valid_feed_b_df(valid_feed_a_df: pd.DataFrame) -> pd.DataFrame:
     """Create valid Feed B DataFrame extending Feed A per Section 0.8.3."""
     df = valid_feed_a_df.copy()
-    df['tx_family'] = ['call', 'lead']
+    df['tx_family'] = ['calls', 'leads']  # TxFamily enum uses plural values
     df['slice_name'] = ['ad_source', 'keyword']
     df['slice_value'] = ['google.com', 'medicare plans']
     df['fill_rate_by_rev'] = [0.85, 0.75]
@@ -233,7 +233,7 @@ class TestFeedBRequiredColumns:
     def test_validate_columns_feed_b_partial_slice_columns(self, valid_feed_a_df: pd.DataFrame):
         """Validate error when only some slice columns are present."""
         df = valid_feed_a_df.copy()
-        df['tx_family'] = ['call', 'lead']
+        df['tx_family'] = ['calls', 'leads']  # TxFamily enum uses plural values
         # Missing slice_name, slice_value, fill_rate_by_rev
         
         errors = validate_columns(df, FeedType.B)
@@ -537,7 +537,7 @@ class TestSliceValueCap:
             'traffic_type': ['Full O&O'] * 100,
             'tier': ['Premium'] * 100,
             'subid': ['SUB001'] * 100,
-            'tx_family': ['call'] * 100,
+            'tx_family': ['calls'] * 100,  # TxFamily enum uses plural values
             'slice_name': ['ad_source'] * 100,
             'slice_value': [f'source_{i}' for i in range(100)],
             'fill_rate_by_rev': [0.5] * 100,
@@ -569,7 +569,7 @@ class TestSliceValueCap:
             'traffic_type': ['Full O&O'] * 5,
             'tier': ['Premium'] * 5,
             'subid': ['SUB001'] * 5,
-            'tx_family': ['call'] * 5,
+            'tx_family': ['calls'] * 5,  # TxFamily enum uses plural values
             'slice_name': ['ad_source'] * 5,
             'slice_value': ['source_1', 'source_2', 'source_3', 'source_4', 'source_5'],
             'fill_rate_by_rev': [0.5] * 5,
@@ -603,7 +603,7 @@ class TestSliceValueCap:
             'traffic_type': ['Full O&O'] * 6,
             'tier': ['Premium'] * 6,
             'subid': ['SUB001'] * 3 + ['SUB002'] * 3,  # 2 groups
-            'tx_family': ['call'] * 6,
+            'tx_family': ['calls'] * 6,  # TxFamily enum uses plural values
             'slice_name': ['ad_source'] * 6,
             'slice_value': ['a', 'b', 'c', 'd', 'e', 'f'],
             'fill_rate_by_rev': [0.5] * 6,
@@ -650,7 +650,7 @@ class TestSliceValueCap:
             'traffic_type': ['Full O&O'] * 3,
             'tier': ['Premium'] * 3,
             'subid': ['SUB001'] * 3,
-            'tx_family': ['call'] * 3,
+            'tx_family': ['calls'] * 3,  # TxFamily enum uses plural values
             'slice_name': ['ad_source'] * 3,
             'slice_value': ['a', 'b', 'c'],
             'fill_rate_by_rev': [0.5] * 3,
@@ -689,7 +689,7 @@ class TestSmartUnspecifiedFilter:
             'traffic_type': ['Full O&O'],
             'tier': ['Premium'],
             'subid': ['SUB001'],
-            'tx_family': ['call'],
+            'tx_family': ['calls'],  # TxFamily enum uses plural values
             'slice_name': ['ad_source'],
             'slice_value': ['Unspecified'],
             'fill_rate_by_rev': [0.95],  # Above threshold
@@ -719,7 +719,7 @@ class TestSmartUnspecifiedFilter:
             'traffic_type': ['Full O&O'],
             'tier': ['Premium'],
             'subid': ['SUB001'],
-            'tx_family': ['call'],
+            'tx_family': ['calls'],  # TxFamily enum uses plural values
             'slice_name': ['ad_source'],
             'slice_value': ['Unspecified'],
             'fill_rate_by_rev': [0.85],  # Below threshold
@@ -749,7 +749,7 @@ class TestSmartUnspecifiedFilter:
             'traffic_type': ['Full O&O'],
             'tier': ['Premium'],
             'subid': ['SUB001'],
-            'tx_family': ['call'],
+            'tx_family': ['calls'],  # TxFamily enum uses plural values
             'slice_name': ['ad_source'],
             'slice_value': ['Unspecified'],
             'fill_rate_by_rev': [0.90],  # Exactly at threshold
@@ -779,7 +779,7 @@ class TestSmartUnspecifiedFilter:
             'traffic_type': ['Full O&O'],
             'tier': ['Premium'],
             'subid': ['SUB001'],
-            'tx_family': ['call'],
+            'tx_family': ['calls'],  # TxFamily enum uses plural values
             'slice_name': ['ad_source'],
             'slice_value': ['Unspecified'],
             'fill_rate_by_rev': [0.89],  # Just below threshold
@@ -809,7 +809,7 @@ class TestSmartUnspecifiedFilter:
             'traffic_type': ['Full O&O'],
             'tier': ['Premium'],
             'subid': ['SUB001'],
-            'tx_family': ['call'],
+            'tx_family': ['calls'],  # TxFamily enum uses plural values
             'slice_name': ['ad_source'],
             'slice_value': ['google.com'],  # Not Unspecified
             'fill_rate_by_rev': [0.99],  # Very high fill rate
@@ -843,7 +843,7 @@ class TestSmartUnspecifiedFilter:
             'traffic_type': ['Full O&O', 'Full O&O'],
             'tier': ['Premium', 'Premium'],
             'subid': ['SUB001', 'SUB002'],
-            'tx_family': ['call', 'call'],
+            'tx_family': ['calls', 'calls'],  # TxFamily enum uses plural values
             'slice_name': ['ad_source', 'ad_source'],
             'slice_value': ['UNSPECIFIED', 'unspecified'],  # Different cases
             'fill_rate_by_rev': [0.95, 0.95],  # High fill rate
@@ -873,7 +873,7 @@ class TestSmartUnspecifiedFilter:
             'traffic_type': ['Full O&O'] * 4,
             'tier': ['Premium'] * 4,
             'subid': ['SUB001'] * 4,
-            'tx_family': ['call'] * 4,
+            'tx_family': ['calls'] * 4,  # TxFamily enum uses plural values
             'slice_name': ['ad_source'] * 4,
             'slice_value': ['google.com', 'Unspecified', 'bing.com', 'Unspecified'],
             'fill_rate_by_rev': [0.95, 0.95, 0.85, 0.85],  # Mix of high/low
@@ -1340,7 +1340,7 @@ class TestEdgeCases:
             'traffic_type': ['Full O&O'],
             'tier': ['Premium'],
             'subid': ['SUB001'],
-            'tx_family': ['call'],
+            'tx_family': ['calls'],  # TxFamily enum uses plural values
             'slice_name': ['keyword'],
             'slice_value': ['medicare "plan" <2026>'],  # Special chars
             'fill_rate_by_rev': [0.5],
