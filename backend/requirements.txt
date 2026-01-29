@@ -22,6 +22,10 @@ uvicorn[standard]==0.30.6
 # Pydantic for request/response model validation and settings management
 pydantic==2.10.4
 
+# Pydantic settings extension for environment variable configuration
+# Required by backend/core/config.py for BaseSettings class
+pydantic-settings==2.7.0
+
 # HTTP Client
 # -----------
 # Async HTTP client for external API calls and health checks
