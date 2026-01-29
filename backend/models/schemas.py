@@ -19,7 +19,7 @@ Source references:
 All models use Pydantic v2 syntax with proper field validation and examples.
 """
 
-from datetime import datetime, date
+from datetime import datetime, date as DateType
 from typing import Dict, List, Optional, Any, Union
 
 from pydantic import BaseModel, Field, ConfigDict
@@ -2157,7 +2157,7 @@ class ChangePointResult(BaseModel):
         ...,
         description="Source identifier"
     )
-    breakDate: date = Field(
+    breakDate: DateType = Field(
         ...,
         description="Date when the change point was detected"
     )
@@ -2458,7 +2458,7 @@ class PerformanceHistoryPoint(BaseModel):
         }
     )
     
-    date: date = Field(
+    date: DateType = Field(
         ...,
         description="Date of the data point"
     )
@@ -2785,7 +2785,7 @@ class FeedARow(BaseModel):
         }
     )
     
-    date_et: date = Field(
+    date_et: DateType = Field(
         ...,
         description="Date in Eastern Time"
     )
@@ -2903,7 +2903,7 @@ class FeedBRow(BaseModel):
         }
     )
     
-    date_et: date = Field(
+    date_et: DateType = Field(
         ...,
         description="Date in Eastern Time"
     )
@@ -3037,7 +3037,7 @@ class FeedCRow(BaseModel):
         }
     )
     
-    date_et: date = Field(
+    date_et: DateType = Field(
         ...,
         description="Date in Eastern Time"
     )
@@ -3286,11 +3286,11 @@ class RollupSubidWindow(BaseModel):
         ...,
         description="Traffic type"
     )
-    windowStart: date = Field(
+    windowStart: DateType = Field(
         ...,
         description="Start date of rollup window"
     )
-    windowEnd: date = Field(
+    windowEnd: DateType = Field(
         ...,
         description="End date of rollup window"
     )
@@ -3506,7 +3506,7 @@ class InsightActionOutcome(BaseModel):
         ...,
         description="Source identifier"
     )
-    action_date: date = Field(
+    action_date: DateType = Field(
         ...,
         description="Date of the action"
     )
