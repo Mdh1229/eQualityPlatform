@@ -417,6 +417,15 @@ def cluster_performers(
                 "Standard sources meeting Premium thresholds - ready for upgrade"
             )
         
+        # Cluster 5: Low Volume - Insufficient data
+        # Check this BEFORE Stable Standard to ensure low volume records are properly classified
+        if action == "insufficient_volume" or record.hasInsufficientVolume:
+            return (
+                5,
+                "📊 Low Volume",
+                "Insufficient data for reliable classification"
+            )
+        
         # Cluster 2: Stable - Standard sources meeting requirements
         if (classification == "Standard" or not classification) and action in [
             "keep_standard",
@@ -453,15 +462,7 @@ def cluster_performers(
                 "Sources requiring immediate action - pause or urgent attention"
             )
         
-        # Cluster 5: Low Volume - Insufficient data
-        if action == "insufficient_volume" or record.hasInsufficientVolume:
-            return (
-                5,
-                "📊 Low Volume",
-                "Insufficient data for reliable classification"
-            )
-        
-        # Default: Review needed
+        # Default: Review needed (Cluster 5 for Low Volume is checked earlier)
         return (
             6,
             "🔍 Needs Review",
