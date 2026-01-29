@@ -38,11 +38,12 @@ Dependencies:
 - backend/services/buyer_salvage.py: what_if_remove_buyer
 """
 
-from typing import List, Optional
+from datetime import date, timedelta
+from typing import List, Optional, Dict, Any
 
 from fastapi import APIRouter, HTTPException, Depends, Query
 
-from backend.core.dependencies import get_db_session
+from backend.core.database import get_db_pool
 from backend.models.schemas import (
     MacroInsightsRequest,
     MacroInsightsResponse,
@@ -58,9 +59,6 @@ from backend.services.macro_clustering import (
     bucket_keyword,
     normalize_keyword,
     extract_domain,
-    get_cluster_members,
-    build_feature_table,
-    cluster_subids,
 )
 from backend.services.driver_analysis import what_if_remove_slice
 from backend.services.buyer_salvage import what_if_remove_buyer
@@ -89,7 +87,6 @@ router = APIRouter(
 @router.post("/cluster", response_model=MacroInsightsResponse)
 async def compute_macro_clusters(
     request: MacroInsightsRequest,
-    db=Depends(get_db_session),
 ) -> MacroInsightsResponse:
     """
     Run macro clustering analysis to detect patterns across sub_ids.
@@ -127,17 +124,14 @@ async def compute_macro_clusters(
             - run_id: Analysis run ID (required)
             - vertical: Business vertical filter (optional)
             - traffic_type: Traffic type filter (optional)
-            - min_k: Minimum number of clusters (default: 4)
-            - max_k: Maximum number of clusters (default: 12)
-            - include_dimensions: List of dimensions to include (optional)
-        db: Database session dependency
+            - trend_window_days: Trend window in days (default: 180)
+            - include_keyword_buckets: Whether to include keyword bucketing
     
     Returns:
         MacroInsightsResponse containing:
             - clusters: List of MacroClusterResult with labels and members
-            - feature_importance: Top features for clustering
-            - silhouette_score: Quality metric for clustering
-            - dimensions_used: Dimensions actually used in clustering
+            - featureImportance: Top features for clustering
+            - silhouetteScore: Quality metric for clustering
     
     Raises:
         HTTPException 404: If run_id not found
@@ -150,29 +144,22 @@ async def compute_macro_clusters(
         # preprocessing, clustering, and labeling per Section 0.7.3
         result = await macro_insights_for_run(
             run_id=request.run_id,
-            vertical=request.vertical.value if request.vertical else None,
-            traffic_type=request.traffic_type.value if request.traffic_type else None,
-            min_k=request.min_k or 4,
-            max_k=request.max_k or 12,
-            include_dimensions=request.include_dimensions,
-            db=db,
+            vertical=request.vertical,
+            traffic_type=request.traffic_type,
+            trend_window_days=request.trend_window_days,
         )
         
-        # Handle case where no data was found
-        if result is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No data found for run_id {request.run_id} with the specified filters",
+        # Handle case where no data was found (empty clusters)
+        if result is None or (hasattr(result, 'clusters') and not result.clusters):
+            # Return empty result with zero silhouette score
+            return MacroInsightsResponse(
+                clusters=[],
+                featureImportance={},
+                silhouetteScore=0.0,
             )
         
-        # Convert service result to response model
-        # The macro_insights_for_run returns a dict compatible with MacroInsightsResponse
-        return MacroInsightsResponse(
-            clusters=result.get("clusters", []),
-            feature_importance=result.get("feature_importance", {}),
-            silhouette_score=result.get("silhouette_score", 0.0),
-            dimensions_used=result.get("dimensions_used", []),
-        )
+        # The macro_insights_for_run already returns a MacroInsightsResponse
+        return result
         
     except HTTPException:
         # Re-raise HTTP exceptions as-is
@@ -199,9 +186,8 @@ async def compute_macro_clusters(
 @router.get("/keyword-buckets", response_model=List[KeywordBucket])
 async def get_keyword_buckets(
     run_id: str = Query(..., description="Analysis run ID"),
-    vertical: Optional[Vertical] = Query(None, description="Business vertical filter"),
-    traffic_type: Optional[TrafficType] = Query(None, description="Traffic type filter"),
-    db=Depends(get_db_session),
+    vertical: Optional[str] = Query(None, description="Business vertical filter"),
+    traffic_type: Optional[str] = Query(None, description="Traffic type filter"),
 ) -> List[KeywordBucket]:
     """
     Get keyword bucketing analysis for the specified run.
@@ -229,21 +215,23 @@ async def get_keyword_buckets(
         run_id: Analysis run ID to analyze keywords for
         vertical: Optional filter by business vertical
         traffic_type: Optional filter by traffic type
-        db: Database session dependency
     
     Returns:
         List of KeywordBucket containing:
             - bucket_name: The bucket category (brand, competitor, etc.)
             - keyword_count: Number of unique keywords in this bucket
-            - total_volume: Total volume (revenue or impressions) in bucket
-            - avg_quality: Average quality rate for keywords in bucket
-            - top_keywords: Sample of top keywords in the bucket
+            - total_revenue: Total revenue in bucket
+            - avg_call_quality: Average call quality rate for keywords in bucket
+            - avg_lead_quality: Average lead transfer rate for keywords in bucket
+            - keywords: Sample of keywords in the bucket
     
     Raises:
         HTTPException 404: If run_id not found or no keyword data available
         HTTPException 500: If bucket computation fails
     """
     try:
+        pool = await get_db_pool()
+        
         # Query slice data from the database for keyword analysis
         # Keywords are extracted from slice_value where slice_name='keyword' or similar
         query = """
@@ -266,22 +254,22 @@ async def get_keyword_buckets(
               AND s.slice_name IN ('keyword', 'search_term', 'ad_keyword', 'keyword_text')
         """
         
-        params = [run_id]
+        params: List[Any] = [run_id]
         param_idx = 2
         
         if vertical:
             query += f" AND s.vertical = ${param_idx}"
-            params.append(vertical.value)
+            params.append(vertical)
             param_idx += 1
             
         if traffic_type:
             query += f" AND s.traffic_type = ${param_idx}"
-            params.append(traffic_type.value)
+            params.append(traffic_type)
             param_idx += 1
         
         query += " GROUP BY r.id, s.slice_name, s.slice_value"
         
-        async with db.acquire() as conn:
+        async with pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
         
         if not rows:
@@ -291,7 +279,7 @@ async def get_keyword_buckets(
         
         # Bucket keywords and aggregate performance metrics
         # Dictionary to hold aggregated data per bucket
-        bucket_data: dict = {
+        bucket_data: Dict[str, Dict[str, Any]] = {
             "brand": {"keywords": set(), "rev": 0.0, "qual_paid_calls": 0, "paid_calls": 0, "transfer_count": 0, "leads": 0},
             "competitor": {"keywords": set(), "rev": 0.0, "qual_paid_calls": 0, "paid_calls": 0, "transfer_count": 0, "leads": 0},
             "product": {"keywords": set(), "rev": 0.0, "qual_paid_calls": 0, "paid_calls": 0, "transfer_count": 0, "leads": 0},
@@ -307,20 +295,20 @@ async def get_keyword_buckets(
                 
             # Normalize and bucket the keyword using the service functions
             normalized = normalize_keyword(keyword)
-            bucket_name = bucket_keyword(normalized)
+            bucket_name_str = bucket_keyword(normalized)
             
             # Aggregate metrics into the bucket
-            bucket_data[bucket_name]["keywords"].add(keyword)
-            bucket_data[bucket_name]["rev"] += float(row["total_rev"] or 0)
-            bucket_data[bucket_name]["qual_paid_calls"] += int(row["total_qual_paid_calls"] or 0)
-            bucket_data[bucket_name]["paid_calls"] += int(row["total_paid_calls"] or 0)
-            bucket_data[bucket_name]["transfer_count"] += int(row["total_transfer_count"] or 0)
-            bucket_data[bucket_name]["leads"] += int(row["total_leads"] or 0)
+            bucket_data[bucket_name_str]["keywords"].add(keyword)
+            bucket_data[bucket_name_str]["rev"] += float(row["total_rev"] or 0)
+            bucket_data[bucket_name_str]["qual_paid_calls"] += int(row["total_qual_paid_calls"] or 0)
+            bucket_data[bucket_name_str]["paid_calls"] += int(row["total_paid_calls"] or 0)
+            bucket_data[bucket_name_str]["transfer_count"] += int(row["total_transfer_count"] or 0)
+            bucket_data[bucket_name_str]["leads"] += int(row["total_leads"] or 0)
         
         # Convert bucket_data to list of KeywordBucket response models
         result: List[KeywordBucket] = []
         
-        for bucket_name, data in bucket_data.items():
+        for bucket_name_str, data in bucket_data.items():
             keywords_set = data["keywords"]
             if not keywords_set:
                 # Skip buckets with no keywords
@@ -330,30 +318,28 @@ async def get_keyword_buckets(
             # call_quality_rate = qual_paid_calls / paid_calls (per Section 0.8.4)
             paid_calls = data["paid_calls"]
             qual_paid_calls = data["qual_paid_calls"]
-            call_quality_rate = qual_paid_calls / paid_calls if paid_calls > 0 else 0.0
+            call_quality_rate = qual_paid_calls / paid_calls if paid_calls > 0 else None
             
             # lead_transfer_rate = transfer_count / leads (per Section 0.8.4)
             leads = data["leads"]
             transfer_count = data["transfer_count"]
-            lead_transfer_rate = transfer_count / leads if leads > 0 else 0.0
+            lead_transfer_rate = transfer_count / leads if leads > 0 else None
             
-            # Average quality is the mean of both rates (if both are applicable)
-            avg_quality = (call_quality_rate + lead_transfer_rate) / 2 if leads > 0 and paid_calls > 0 else max(call_quality_rate, lead_transfer_rate)
-            
-            # Get top keywords by selecting first N from the set
-            top_keywords = sorted(list(keywords_set))[:10]
+            # Get sample keywords by selecting first N from the set
+            sample_keywords = sorted(list(keywords_set))[:10]
             
             bucket = KeywordBucket(
-                bucket_name=bucket_name,
+                bucket_name=bucket_name_str,
                 keyword_count=len(keywords_set),
-                total_volume=data["rev"],
-                avg_quality=avg_quality,
-                top_keywords=top_keywords,
+                total_revenue=data["rev"],
+                avg_call_quality=call_quality_rate,
+                avg_lead_quality=lead_transfer_rate,
+                keywords=sample_keywords,
             )
             result.append(bucket)
         
-        # Sort buckets by total volume descending
-        result.sort(key=lambda b: b.total_volume, reverse=True)
+        # Sort buckets by total revenue descending
+        result.sort(key=lambda b: b.total_revenue, reverse=True)
         
         return result
         
@@ -374,7 +360,6 @@ async def get_keyword_buckets(
 @router.post("/what-if", response_model=WhatIfSimulationResult)
 async def simulate_what_if(
     request: WhatIfSimulationRequest,
-    db=Depends(get_db_session),
 ) -> WhatIfSimulationResult:
     """
     Run bounded what-if simulation for slice or buyer removal.
@@ -382,8 +367,8 @@ async def simulate_what_if(
     This endpoint implements the bounded what-if simulator per Section 0.7.5:
     
     Allowed simulations:
-    - Remove specific slice_value from analysis
-    - Remove specific buyer_key from analysis
+    - Remove specific slice_value from analysis (simulation_type='remove_slice')
+    - Remove specific buyer_key from analysis (simulation_type='remove_buyer')
     
     Output:
     - expected_quality_delta (improvement/degradation)
@@ -398,21 +383,17 @@ async def simulate_what_if(
         request: WhatIfSimulationRequest containing:
             - run_id: Analysis run ID (required)
             - sub_id: Sub-affiliate ID to analyze (required)
-            - vertical: Business vertical (required)
-            - traffic_type: Traffic type (required)
-            - simulation_type: 'slice' or 'buyer' (required)
-            - slice_name: Required if simulation_type='slice'
-            - slice_value: Required if simulation_type='slice'
-            - buyer_key: Required if simulation_type='buyer'
-        db: Database session dependency
+            - simulation_type: 'remove_slice' or 'remove_buyer' (required)
+            - slice_value: Required if simulation_type='remove_slice'
+            - buyer_key: Required if simulation_type='remove_buyer'
     
     Returns:
         WhatIfSimulationResult containing:
             - expected_quality_delta: Change in quality (positive = improvement)
             - revenue_delta: Change in revenue (negative = loss)
-            - confidence: Confidence level ('High', 'Med', 'Low')
-            - current_quality: Current quality metrics
-            - simulated_quality: Quality metrics after simulated removal
+            - confidence_level: Confidence level (0.0 to 1.0)
+            - simulation_type: Type of simulation performed
+            - removed_item: Item that was simulated as removed
     
     Raises:
         HTTPException 400: If invalid simulation_type or missing required fields
@@ -423,75 +404,131 @@ async def simulate_what_if(
         # Validate simulation type and required fields
         simulation_type = request.simulation_type.lower() if request.simulation_type else None
         
-        if simulation_type not in ("slice", "buyer"):
+        if simulation_type not in ("remove_slice", "remove_buyer", "slice", "buyer"):
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid simulation_type '{request.simulation_type}'. Must be 'slice' or 'buyer'.",
+                detail=f"Invalid simulation_type '{request.simulation_type}'. Must be 'remove_slice' or 'remove_buyer'.",
             )
         
-        if simulation_type == "slice":
-            if not request.slice_name or not request.slice_value:
+        # Normalize simulation type
+        is_slice = simulation_type in ("remove_slice", "slice")
+        is_buyer = simulation_type in ("remove_buyer", "buyer")
+        
+        if is_slice:
+            if not request.slice_value:
                 raise HTTPException(
                     status_code=400,
-                    detail="slice_name and slice_value are required for slice simulation",
+                    detail="slice_value is required for slice simulation",
+                )
+            
+            # For slice simulation, we need vertical and traffic_type
+            # These are obtained from the run_id's data
+            # Use yesterday as the as_of_date (standard practice)
+            as_of_date = date.today() - timedelta(days=1)
+            
+            # Fetch run details to get vertical and traffic_type
+            pool = await get_db_pool()
+            async with pool.acquire() as conn:
+                run_row = await conn.fetchrow(
+                    """
+                    SELECT DISTINCT s.vertical, s.traffic_type
+                    FROM fact_subid_day s
+                    JOIN rollup_subid_window w ON w.subid = s.subid
+                    WHERE w.run_id = $1 AND w.subid = $2
+                    LIMIT 1
+                    """,
+                    request.run_id,
+                    request.sub_id,
+                )
+            
+            if not run_row:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No data found for run_id {request.run_id} and sub_id {request.sub_id}",
+                )
+            
+            vertical_str = run_row["vertical"]
+            traffic_type_str = run_row["traffic_type"]
+            
+            # Convert to enums for the service call
+            try:
+                vertical_enum = Vertical(vertical_str)
+                traffic_type_enum = TrafficType(traffic_type_str)
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Invalid vertical or traffic_type: {str(e)}",
                 )
             
             # Call the slice removal simulation from driver_analysis service
+            # Default slice_name to 'ad_source' for domain removal simulations
+            slice_name = "ad_source"
             result = await what_if_remove_slice(
                 sub_id=request.sub_id,
-                vertical=request.vertical.value if request.vertical else request.vertical_str,
-                traffic_type=request.traffic_type.value if request.traffic_type else request.traffic_type_str,
-                slice_name=request.slice_name,
+                vertical=vertical_enum,
+                traffic_type=traffic_type_enum,
+                as_of_date=as_of_date,
+                slice_name=slice_name,
                 slice_value=request.slice_value,
             )
             
             # Convert service result to response model
+            # The what_if_remove_slice returns a WhatIfResult object
             return WhatIfSimulationResult(
-                simulation_type="slice",
-                target_identifier=f"{request.slice_name}:{request.slice_value}",
-                expected_quality_delta=result.get("quality_delta", 0.0),
-                revenue_delta=result.get("revenue_delta", 0.0),
-                confidence=result.get("confidence", "Low"),
-                current_quality={
-                    "call_quality_rate": result.get("current_call_quality", 0.0),
-                    "lead_transfer_rate": result.get("current_lead_transfer", 0.0),
-                },
-                simulated_quality={
-                    "call_quality_rate": result.get("simulated_call_quality", 0.0),
-                    "lead_transfer_rate": result.get("simulated_lead_transfer", 0.0),
-                },
+                expected_quality_delta=result.expected_quality_delta,
+                revenue_delta=result.revenue_delta,
+                confidence_level=_confidence_to_float(result.confidence),
+                simulation_type="remove_slice",
+                removed_item=request.slice_value,
             )
             
-        elif simulation_type == "buyer":
+        elif is_buyer:
             if not request.buyer_key:
                 raise HTTPException(
                     status_code=400,
                     detail="buyer_key is required for buyer simulation",
                 )
             
+            # Fetch run details to get vertical and traffic_type
+            pool = await get_db_pool()
+            async with pool.acquire() as conn:
+                run_row = await conn.fetchrow(
+                    """
+                    SELECT DISTINCT s.vertical, s.traffic_type
+                    FROM fact_subid_day s
+                    JOIN rollup_subid_window w ON w.subid = s.subid
+                    WHERE w.run_id = $1 AND w.subid = $2
+                    LIMIT 1
+                    """,
+                    request.run_id,
+                    request.sub_id,
+                )
+            
+            if not run_row:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No data found for run_id {request.run_id} and sub_id {request.sub_id}",
+                )
+            
+            vertical_str = run_row["vertical"]
+            traffic_type_str = run_row["traffic_type"]
+            
             # Call the buyer removal simulation from buyer_salvage service
+            # The what_if_remove_buyer expects strings, not enums
             result = await what_if_remove_buyer(
                 sub_id=request.sub_id,
-                vertical=request.vertical.value if request.vertical else request.vertical_str,
-                traffic_type=request.traffic_type.value if request.traffic_type else request.traffic_type_str,
+                vertical=vertical_str,
+                traffic_type=traffic_type_str,
                 buyer_key=request.buyer_key,
             )
             
-            # Convert service result to response model
+            # Convert service result (dict) to response model
             return WhatIfSimulationResult(
-                simulation_type="buyer",
-                target_identifier=request.buyer_key,
                 expected_quality_delta=result.get("quality_delta", 0.0),
                 revenue_delta=result.get("revenue_delta", 0.0),
-                confidence=result.get("confidence", "Low"),
-                current_quality={
-                    "call_quality_rate": result.get("current_call_quality", 0.0),
-                    "lead_transfer_rate": result.get("current_lead_transfer", 0.0),
-                },
-                simulated_quality={
-                    "call_quality_rate": result.get("simulated_call_quality", 0.0),
-                    "lead_transfer_rate": result.get("simulated_lead_transfer", 0.0),
-                },
+                confidence_level=_confidence_str_to_float(result.get("confidence", "Low")),
+                simulation_type="remove_buyer",
+                removed_item=request.buyer_key,
             )
         
         # Should never reach here due to validation above
@@ -514,6 +551,22 @@ async def simulate_what_if(
         )
 
 
+def _confidence_to_float(confidence: str) -> float:
+    """Convert confidence string to float value."""
+    confidence_map = {
+        "high": 0.9,
+        "med": 0.7,
+        "medium": 0.7,
+        "low": 0.4,
+    }
+    return confidence_map.get(confidence.lower(), 0.5)
+
+
+def _confidence_str_to_float(confidence: str) -> float:
+    """Convert confidence string to float value."""
+    return _confidence_to_float(confidence)
+
+
 # =============================================================================
 # GET /macro-insights/dimensions - List available macro dimensions
 # =============================================================================
@@ -522,9 +575,8 @@ async def simulate_what_if(
 @router.get("/dimensions", response_model=AvailableDimensionsResponse)
 async def get_available_dimensions(
     run_id: str = Query(..., description="Analysis run ID"),
-    vertical: Optional[Vertical] = Query(None, description="Business vertical filter"),
-    traffic_type: Optional[TrafficType] = Query(None, description="Traffic type filter"),
-    db=Depends(get_db_session),
+    vertical: Optional[str] = Query(None, description="Business vertical filter"),
+    traffic_type: Optional[str] = Query(None, description="Traffic type filter"),
 ) -> AvailableDimensionsResponse:
     """
     List available macro dimensions for clustering analysis.
@@ -543,11 +595,11 @@ async def get_available_dimensions(
         run_id: Analysis run ID to check dimensions for
         vertical: Optional filter by business vertical
         traffic_type: Optional filter by traffic type
-        db: Database session dependency
     
     Returns:
         AvailableDimensionsResponse containing:
-            - dimensions: List of available dimension names
+            - run_id: Analysis run ID
+            - available_dimensions: List of available dimension names
             - dimension_details: Dict with coverage info per dimension
     
     Raises:
@@ -555,27 +607,29 @@ async def get_available_dimensions(
         HTTPException 500: If dimension check fails
     """
     try:
+        pool = await get_db_pool()
+        
         available_dimensions: List[str] = []
-        dimension_details: dict = {}
+        dimension_details: Dict[str, Any] = {}
         
         # Build base query conditions
-        base_conditions = []
-        base_params = [run_id]
+        base_conditions: List[str] = []
+        base_params: List[Any] = [run_id]
         param_idx = 2
         
         if vertical:
             base_conditions.append(f"vertical = ${param_idx}")
-            base_params.append(vertical.value)
+            base_params.append(vertical)
             param_idx += 1
             
         if traffic_type:
             base_conditions.append(f"traffic_type = ${param_idx}")
-            base_params.append(traffic_type.value)
+            base_params.append(traffic_type)
             param_idx += 1
         
         where_clause = " AND ".join(base_conditions) if base_conditions else "1=1"
         
-        async with db.acquire() as conn:
+        async with pool.acquire() as conn:
             # Check for buyer dimension availability (from Feed C - fact_subid_buyer_day)
             buyer_query = f"""
                 SELECT COUNT(DISTINCT buyer_key) as buyer_count
@@ -592,8 +646,8 @@ async def get_available_dimensions(
             if buyer_count > 0:
                 available_dimensions.append("buyer")
                 dimension_details["buyer"] = {
-                    "unique_count": buyer_count,
-                    "description": "Buyer/account manager dimension from Feed C",
+                    "count": buyer_count,
+                    "coverage": 1.0,  # Will be computed if needed
                 }
             
             # Check for marketing_angle dimension (from Feed B slices)
@@ -613,8 +667,8 @@ async def get_available_dimensions(
             if angle_count > 0:
                 available_dimensions.append("marketing_angle")
                 dimension_details["marketing_angle"] = {
-                    "unique_count": angle_count,
-                    "description": "Marketing angle dimension from slice data",
+                    "count": angle_count,
+                    "coverage": 1.0,
                 }
             
             # Check for domain dimension (extracted from ad_source in Feed B)
@@ -637,8 +691,8 @@ async def get_available_dimensions(
             if domain_count > 0:
                 available_dimensions.append("domain")
                 dimension_details["domain"] = {
-                    "unique_count": domain_count,
-                    "description": "Domain dimension extracted from ad_source URLs",
+                    "count": domain_count,
+                    "coverage": 1.0,
                 }
             
             # Check for keyword dimension (for keyword_bucket)
@@ -660,12 +714,13 @@ async def get_available_dimensions(
             if keyword_count > 0:
                 available_dimensions.append("keyword_bucket")
                 dimension_details["keyword_bucket"] = {
-                    "unique_count": keyword_count,
-                    "description": "Keyword bucketing dimension with categories: brand, competitor, product, price-sensitive, informational, other",
+                    "count": keyword_count,
+                    "coverage": 1.0,
                 }
         
         return AvailableDimensionsResponse(
-            dimensions=available_dimensions,
+            run_id=run_id,
+            available_dimensions=available_dimensions,
             dimension_details=dimension_details,
         )
         
@@ -687,67 +742,90 @@ async def get_available_dimensions(
 async def get_cluster_member_details(
     run_id: str,
     cluster_id: int,
-    vertical: Optional[Vertical] = Query(None, description="Business vertical filter"),
-    traffic_type: Optional[TrafficType] = Query(None, description="Traffic type filter"),
+    vertical: Optional[str] = Query(None, description="Business vertical filter"),
+    traffic_type: Optional[str] = Query(None, description="Traffic type filter"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum members to return"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
-    db=Depends(get_db_session),
-) -> dict:
+) -> Dict[str, Any]:
     """
-    Get detailed member information for a specific cluster.
+    Get cluster details and summary for a specific cluster.
     
-    This endpoint returns the sub_ids that belong to a specific cluster
-    along with their key metrics. Useful for drilling down into cluster
-    composition after initial macro clustering analysis.
+    This endpoint returns summary information about a cluster including
+    its label, member count, and average metrics. For the full list of
+    member sub_ids, use the clustering endpoint directly.
+    
+    Note: The MacroClusterResult schema returns aggregate metrics, not individual
+    sub_ids. This is by design for performance - individual sub_ids can be
+    retrieved by re-running clustering at the data layer.
     
     Args:
         run_id: Analysis run ID
         cluster_id: Cluster identifier from macro clustering results
         vertical: Optional filter by business vertical
         traffic_type: Optional filter by traffic type
-        limit: Maximum number of members to return (default: 100, max: 1000)
-        offset: Pagination offset for large clusters
-        db: Database session dependency
+        limit: Not used (kept for API compatibility)
+        offset: Not used (kept for API compatibility)
     
     Returns:
         Dictionary containing:
             - cluster_id: The cluster identifier
-            - member_count: Total members in the cluster
-            - members: List of member sub_ids with their metrics
-            - has_more: Boolean indicating if more members exist
+            - cluster_label: Descriptive label for the cluster
+            - member_count: Number of members in the cluster
+            - avg_call_quality: Average call quality rate
+            - avg_lead_quality: Average lead transfer rate
+            - avg_revenue: Average revenue
+            - differentiating_features: Features that distinguish this cluster
     
     Raises:
         HTTPException 404: If run_id or cluster not found
-        HTTPException 500: If member retrieval fails
+        HTTPException 500: If retrieval fails
     """
     try:
-        # Get cluster members from the clustering service
-        members = await get_cluster_members(
+        # Re-run clustering to get cluster data
+        clustering_result = await macro_insights_for_run(
             run_id=run_id,
-            cluster_id=cluster_id,
-            vertical=vertical.value if vertical else None,
-            traffic_type=traffic_type.value if traffic_type else None,
-            limit=limit + 1,  # Get one extra to check if there are more
-            offset=offset,
-            db=db,
+            vertical=vertical,
+            traffic_type=traffic_type,
         )
         
-        if members is None:
+        if not clustering_result or not clustering_result.clusters:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No clustering results found for run {run_id}",
+            )
+        
+        # Find the specified cluster (use clusterId, the camelCase field)
+        target_cluster: Optional[MacroClusterResult] = None
+        for cluster in clustering_result.clusters:
+            if cluster.clusterId == cluster_id:
+                target_cluster = cluster
+                break
+        
+        if target_cluster is None:
             raise HTTPException(
                 status_code=404,
                 detail=f"Cluster {cluster_id} not found for run {run_id}",
             )
         
-        # Check if there are more members beyond the limit
-        has_more = len(members) > limit
-        if has_more:
-            members = members[:limit]
-        
+        # Return cluster details
+        # Note: The schema doesn't include individual sub_ids - just aggregate metrics
         return {
-            "cluster_id": cluster_id,
-            "member_count": len(members),
-            "members": members,
-            "has_more": has_more,
+            "cluster_id": target_cluster.clusterId,
+            "cluster_label": target_cluster.clusterLabel,
+            "member_count": target_cluster.memberCount,
+            "avg_call_quality": target_cluster.avgCallQuality,
+            "avg_lead_quality": target_cluster.avgLeadQuality,
+            "avg_revenue": target_cluster.avgRevenue,
+            "differentiating_features": [
+                {
+                    "feature": f.feature,
+                    "importance": f.importance,
+                    "mean_value": f.meanValue,
+                    "cluster_mean": f.clusterMean,
+                }
+                for f in target_cluster.differentiatingFeatures
+            ],
+            "has_more": False,  # All data returned in single call
             "offset": offset,
             "limit": limit,
         }
@@ -757,18 +835,17 @@ async def get_cluster_member_details(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Error retrieving cluster members: {str(e)}",
+            detail=f"Error retrieving cluster details: {str(e)}",
         )
 
 
 @router.get("/domain-analysis")
 async def analyze_domains(
     run_id: str = Query(..., description="Analysis run ID"),
-    vertical: Optional[Vertical] = Query(None, description="Business vertical filter"),
-    traffic_type: Optional[TrafficType] = Query(None, description="Traffic type filter"),
+    vertical: Optional[str] = Query(None, description="Business vertical filter"),
+    traffic_type: Optional[str] = Query(None, description="Traffic type filter"),
     limit: int = Query(50, ge=1, le=200, description="Maximum domains to return"),
-    db=Depends(get_db_session),
-) -> dict:
+) -> Dict[str, Any]:
     """
     Analyze domain performance extracted from ad_source URLs.
     
@@ -781,7 +858,6 @@ async def analyze_domains(
         vertical: Optional filter by business vertical
         traffic_type: Optional filter by traffic type
         limit: Maximum number of domains to return (default: 50, max: 200)
-        db: Database session dependency
     
     Returns:
         Dictionary containing:
@@ -793,6 +869,8 @@ async def analyze_domains(
         HTTPException 500: If domain analysis fails
     """
     try:
+        pool = await get_db_pool()
+        
         # Query ad_source slices and extract domains
         query = """
             SELECT 
@@ -814,22 +892,22 @@ async def analyze_domains(
               AND s.slice_value != ''
         """
         
-        params = [run_id]
+        params: List[Any] = [run_id]
         param_idx = 2
         
         if vertical:
             query += f" AND s.vertical = ${param_idx}"
-            params.append(vertical.value)
+            params.append(vertical)
             param_idx += 1
             
         if traffic_type:
             query += f" AND s.traffic_type = ${param_idx}"
-            params.append(traffic_type.value)
+            params.append(traffic_type)
             param_idx += 1
         
         query += " GROUP BY s.slice_value ORDER BY SUM(s.rev) DESC"
         
-        async with db.acquire() as conn:
+        async with pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
         
         if not rows:
@@ -839,7 +917,7 @@ async def analyze_domains(
             }
         
         # Extract domains and aggregate by domain
-        domain_data: dict = {}
+        domain_data: Dict[str, Dict[str, Any]] = {}
         
         for row in rows:
             ad_source = row["ad_source"]
@@ -874,7 +952,7 @@ async def analyze_domains(
             domain_data[domain]["subid_count"] += int(row["subid_count"] or 0)
         
         # Calculate quality metrics for each domain
-        domain_results = []
+        domain_results: List[Dict[str, Any]] = []
         for domain, data in domain_data.items():
             paid_calls = data["total_paid_calls"]
             qual_paid_calls = data["total_qual_paid_calls"]
