@@ -238,7 +238,8 @@ def validate_grain_uniqueness(
                 f"Found {duplicate_count} duplicate rows for Feed {feed_type.value} grain "
                 f"({', '.join(available_grain_cols)}). First duplicate rows at indices: {duplicate_indices}"
             ),
-            row_number=duplicate_indices[0] if duplicate_indices else None
+            # Convert 0-based DataFrame index to 1-based row number (add 1)
+            row_number=(duplicate_indices[0] + 1) if duplicate_indices else None
         ))
     
     return errors
@@ -283,7 +284,8 @@ def validate_data_types(
                 errors.append(ValidationError(
                     field='date_et',
                     message=f"Found {invalid_count} invalid date values. First invalid rows at indices: {invalid_indices}",
-                    row_number=invalid_indices[0] if invalid_indices else None
+                    # Convert 0-based DataFrame index to 1-based row number (add 1)
+                    row_number=(invalid_indices[0] + 1) if invalid_indices else None
                 ))
     
     # Validate numeric columns
@@ -299,7 +301,8 @@ def validate_data_types(
                 errors.append(ValidationError(
                     field=col,
                     message=f"Found {invalid_count} non-numeric values in column '{col}'. First invalid rows at indices: {invalid_indices}",
-                    row_number=invalid_indices[0] if invalid_indices else None
+                    # Convert 0-based DataFrame index to 1-based row number (add 1)
+                    row_number=(invalid_indices[0] + 1) if invalid_indices else None
                 ))
     
     # Validate fill_rate_by_rev for Feed B (should be between 0 and 1)
@@ -313,7 +316,8 @@ def validate_data_types(
             errors.append(ValidationError(
                 field='fill_rate_by_rev',
                 message=f"Found {invalid_count} fill_rate_by_rev values outside [0, 1] range. First invalid rows at indices: {invalid_indices}",
-                row_number=invalid_indices[0] if invalid_indices else None
+                # Convert 0-based DataFrame index to 1-based row number (add 1)
+                row_number=(invalid_indices[0] + 1) if invalid_indices else None
             ))
     
     return errors
@@ -363,7 +367,8 @@ def validate_enum_values(
             errors.append(ValidationError(
                 field='vertical',
                 message=f"Found {invalid_count} invalid vertical values: {invalid_values}. Valid values are: {[v.value for v in Vertical]}",
-                row_number=invalid_indices[0] if invalid_indices else None
+                # Convert 0-based DataFrame index to 1-based row number (add 1)
+                row_number=(invalid_indices[0] + 1) if invalid_indices else None
             ))
     
     # Validate traffic_type
@@ -378,7 +383,8 @@ def validate_enum_values(
             errors.append(ValidationError(
                 field='traffic_type',
                 message=f"Found {invalid_count} invalid traffic_type values: {invalid_values}. Valid values are: {[t.value for t in TrafficType]}",
-                row_number=invalid_indices[0] if invalid_indices else None
+                # Convert 0-based DataFrame index to 1-based row number (add 1)
+                row_number=(invalid_indices[0] + 1) if invalid_indices else None
             ))
     
     # Validate tx_family (Feed B only)
@@ -393,7 +399,8 @@ def validate_enum_values(
             errors.append(ValidationError(
                 field='tx_family',
                 message=f"Found {invalid_count} invalid tx_family values: {invalid_values}. Valid values are: {[t.value for t in TxFamily]}",
-                row_number=invalid_indices[0] if invalid_indices else None
+                # Convert 0-based DataFrame index to 1-based row number (add 1)
+                row_number=(invalid_indices[0] + 1) if invalid_indices else None
             ))
     
     # Validate buyer_key_variant (Feed C only)
@@ -408,7 +415,8 @@ def validate_enum_values(
             errors.append(ValidationError(
                 field='buyer_key_variant',
                 message=f"Found {invalid_count} invalid buyer_key_variant values: {invalid_values}. Valid values are: {[b.value for b in BuyerKeyVariant]}",
-                row_number=invalid_indices[0] if invalid_indices else None
+                # Convert 0-based DataFrame index to 1-based row number (add 1)
+                row_number=(invalid_indices[0] + 1) if invalid_indices else None
             ))
     
     return errors
@@ -452,15 +460,14 @@ def apply_slice_cap(
     df_result['rev'] = pd.to_numeric(df_result['rev'], errors='coerce').fillna(0)
     
     # Group and get top N by rev DESC
+    # Using sort + head approach to avoid include_groups deprecation issues
     df_result = (
         df_result
-        .groupby(['date_et', 'subid', 'tx_family', 'slice_name'], as_index=False, group_keys=False)
-        .apply(lambda g: g.nlargest(cap, 'rev'), include_groups=False)
+        .sort_values('rev', ascending=False)
+        .groupby(['date_et', 'subid', 'tx_family', 'slice_name'], as_index=False)
+        .head(cap)
         .reset_index(drop=True)
     )
-    
-    # Restore original column names
-    df_result.columns = df.columns[:len(df_result.columns)]
     
     return df_result
 
