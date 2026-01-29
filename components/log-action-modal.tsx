@@ -1,22 +1,6 @@
 'use client';
 
-/**
- * Log Action Modal Component
- * 
- * Provides a confirmation interface for human-in-the-loop action logging.
- * Implements the system-only-recommends pattern per Section 0.8.1 where
- * the system recommends actions but humans must confirm via Log Action.
- * 
- * Features:
- * - Action type selection (pause, warn_14d, keep, promote, demote)
- * - Rationale input for audit trail
- * - User identification capture
- * - Visual indication of system recommendations
- * 
- * @module components/log-action-modal
- */
-
-import React, { useState, useEffect, ReactNode } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useTheme } from './theme-context';
 import type { ClassificationResult } from '@/lib/types';
 import {
@@ -30,22 +14,23 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import {
-  SaveOutlined,
-  WarningOutlined,
-  PauseCircleOutlined,
-  CheckCircleOutlined,
-  ArrowUpOutlined,
-  ArrowDownOutlined,
+import { 
+  SaveOutlined, 
+  WarningOutlined, 
+  PauseCircleOutlined, 
+  CheckCircleOutlined, 
+  ArrowUpOutlined, 
+  ArrowDownOutlined 
 } from '@ant-design/icons';
 
 // ============================================================================
-// Type Definitions
+// Action Types (Section 0.8.1)
+// System only recommends; humans confirm via Log Action (no autonomous execution)
 // ============================================================================
 
 /**
- * Possible action types that can be logged for a classification result.
- * System recommends; humans confirm via Log Action (no autonomous execution).
+ * Possible action types that a human operator can confirm.
+ * These correspond to the action_recommendation outcomes from classification.
  */
 export type ActionType = 'pause' | 'warn_14d' | 'keep' | 'promote' | 'demote';
 
@@ -55,28 +40,12 @@ export type ActionType = 'pause' | 'warn_14d' | 'keep' | 'promote' | 'demote';
 interface LogActionModalProps {
   /** Whether the modal is open */
   open: boolean;
-  /** Callback when the modal should close */
+  /** Callback when modal should close */
   onClose: () => void;
-  /** The classification result to log an action for */
+  /** The classification result record being acted upon */
   record: ClassificationResult;
-  /** Callback when action is confirmed - receives action type, notes, and user name */
-  onConfirm: (action: ActionType, notes: string, takenBy: string) => Promise<void>;
-}
-
-/**
- * Configuration for each action type including visual styling and descriptions.
- */
-interface ActionConfig {
-  /** The action type identifier */
-  key: ActionType;
-  /** Display label for the action */
-  label: string;
-  /** Icon component to display */
-  icon: ReactNode;
-  /** Theme-aware color for the action */
-  color: string;
-  /** Short description of what the action does */
-  description: string;
+  /** Callback when action is confirmed with selected action, notes, and operator name */
+  onConfirm: (action: ActionType, notes: string, takenBy: string) => void;
 }
 
 // ============================================================================
@@ -84,32 +53,20 @@ interface ActionConfig {
 // ============================================================================
 
 /**
- * Maps a recommendation string to an ActionType.
- * Handles case-insensitive matching and returns null for unknown values.
+ * Maps a classification recommendation string to an ActionType.
+ * Returns null if the recommendation doesn't map to a valid action.
  * 
- * @param recommendation - The recommendation string from ClassificationResult
- * @returns The corresponding ActionType or null if not matched
+ * @param recommendation - The recommendation string from classification result
+ * @returns The corresponding ActionType or null if not mappable
  */
 function mapRecommendationToAction(recommendation?: string): ActionType | null {
-  if (!recommendation) return null;
-  
-  const normalized = recommendation.toLowerCase().trim();
-  
-  switch (normalized) {
-    case 'pause':
-      return 'pause';
-    case 'warn_14d':
-    case 'warn':
-    case 'warning':
-      return 'warn_14d';
-    case 'keep':
-      return 'keep';
-    case 'promote':
-      return 'promote';
-    case 'demote':
-      return 'demote';
-    default:
-      return null;
+  switch (recommendation?.toLowerCase()) {
+    case 'pause': return 'pause';
+    case 'warn_14d': return 'warn_14d';
+    case 'keep': return 'keep';
+    case 'promote': return 'promote';
+    case 'demote': return 'demote';
+    default: return null;
   }
 }
 
@@ -118,53 +75,22 @@ function mapRecommendationToAction(recommendation?: string): ActionType | null {
 // ============================================================================
 
 /**
- * Displays a summary of the record being acted upon.
+ * RecordSummary - Displays a summary of the classification record.
  * Shows vertical, traffic type, current tier, and recommended action.
  */
-function RecordSummary({ 
-  record, 
-  theme, 
-  isDark 
-}: {
+function RecordSummary({ record, theme, isDark }: {
   record: ClassificationResult;
   theme: ReturnType<typeof useTheme>['theme'];
   isDark: boolean;
 }) {
-  // Determine color for the recommendation based on action type
-  const getRecommendationColor = (recommendation?: string): string => {
-    const action = mapRecommendationToAction(recommendation);
-    
-    switch (action) {
-      case 'pause':
-        return isDark ? '#FF7863' : '#E55A45';
-      case 'warn_14d':
-        return '#FBBF24';
-      case 'promote':
-        return isDark ? '#D7FF32' : '#4CAF50';
-      case 'demote':
-        return isDark ? '#BEA0FE' : '#764BA2';
-      default:
-        return theme.colors.text.primary;
-    }
-  };
-
   return (
-    <div
-      style={{
-        background: theme.colors.background.tertiary,
-        borderRadius: '6px',
-        padding: '12px',
-        marginTop: '8px',
-      }}
-    >
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: '1fr 1fr',
-          gap: '8px',
-          fontSize: '12px',
-        }}
-      >
+    <div style={{
+      background: theme.colors.background.tertiary,
+      borderRadius: '6px',
+      padding: '12px',
+      marginTop: '8px'
+    }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', fontSize: '12px' }}>
         <div>
           <span style={{ color: theme.colors.text.tertiary }}>Vertical: </span>
           <span style={{ color: theme.colors.text.primary }}>{record.vertical}</span>
@@ -179,12 +105,12 @@ function RecordSummary({
         </div>
         <div>
           <span style={{ color: theme.colors.text.tertiary }}>Recommended: </span>
-          <span
-            style={{
-              color: getRecommendationColor(record.actionRecommendation),
-              fontWeight: 500,
-            }}
-          >
+          <span style={{ 
+            color: record.actionRecommendation === 'pause' ? (isDark ? '#FF7863' : '#E55A45') : 
+                   record.actionRecommendation === 'promote' ? (isDark ? '#D7FF32' : '#4CAF50') :
+                   theme.colors.text.primary,
+            fontWeight: 500
+          }}>
             {record.actionRecommendation || 'keep'}
           </span>
         </div>
@@ -194,151 +120,113 @@ function RecordSummary({
 }
 
 /**
- * Action selector component that displays all available actions
- * with visual styling and highlights the recommended action.
+ * ActionSelector - Displays action options for the user to select from.
+ * Highlights the recommended action and shows which action is currently selected.
  */
-function ActionSelector({
-  selectedAction,
-  onSelect,
-  recommendedAction,
-  theme,
-  isDark,
-}: {
+function ActionSelector({ selectedAction, onSelect, recommendedAction, theme, isDark }: {
   selectedAction: ActionType | null;
   onSelect: (action: ActionType) => void;
   recommendedAction?: string;
   theme: ReturnType<typeof useTheme>['theme'];
   isDark: boolean;
 }) {
-  // Define all available actions with their configurations
-  const actions: ActionConfig[] = [
-    {
-      key: 'pause',
-      label: 'Pause',
-      icon: <PauseCircleOutlined />,
+  /**
+   * Action definitions with icons, colors, and descriptions.
+   * Order matches the typical workflow flow from most severe to least.
+   */
+  const actions: { key: ActionType; label: string; icon: React.ReactNode; color: string; description: string }[] = [
+    { 
+      key: 'pause', 
+      label: 'Pause', 
+      icon: <PauseCircleOutlined />, 
       color: isDark ? '#FF7863' : '#E55A45',
-      description: 'Remove from active bidding immediately',
+      description: 'Remove from active bidding immediately'
     },
-    {
-      key: 'warn_14d',
-      label: 'Warn (14 days)',
-      icon: <WarningOutlined />,
+    { 
+      key: 'warn_14d', 
+      label: 'Warn (14 days)', 
+      icon: <WarningOutlined />, 
       color: '#FBBF24',
-      description: 'Issue 14-day warning before action',
+      description: 'Issue 14-day warning before action'
     },
-    {
-      key: 'keep',
-      label: 'Keep',
-      icon: <CheckCircleOutlined />,
+    { 
+      key: 'keep', 
+      label: 'Keep', 
+      icon: <CheckCircleOutlined />, 
       color: theme.colors.text.secondary,
-      description: 'No change to current status',
+      description: 'No change to current status'
     },
-    {
-      key: 'promote',
-      label: 'Promote',
-      icon: <ArrowUpOutlined />,
+    { 
+      key: 'promote', 
+      label: 'Promote', 
+      icon: <ArrowUpOutlined />, 
       color: isDark ? '#D7FF32' : '#4CAF50',
-      description: 'Upgrade tier (e.g., Standard → Premium)',
+      description: 'Upgrade tier (e.g., Standard → Premium)'
     },
-    {
-      key: 'demote',
-      label: 'Demote',
-      icon: <ArrowDownOutlined />,
+    { 
+      key: 'demote', 
+      label: 'Demote', 
+      icon: <ArrowDownOutlined />, 
       color: isDark ? '#BEA0FE' : '#764BA2',
-      description: 'Downgrade tier (e.g., Premium → Standard)',
+      description: 'Downgrade tier (e.g., Premium → Standard)'
     },
   ];
-
-  const mappedRecommendation = mapRecommendationToAction(recommendedAction);
-
+  
   return (
     <div style={{ marginTop: '16px' }}>
-      <Label
-        style={{
-          color: theme.colors.text.secondary,
-          fontSize: '12px',
-          marginBottom: '8px',
-          display: 'block',
-        }}
-      >
-        Select Action{' '}
-        <span style={{ color: isDark ? '#FF7863' : '#E55A45' }}>*</span>
+      <Label style={{ color: theme.colors.text.secondary, fontSize: '12px', marginBottom: '8px', display: 'block' }}>
+        Select Action <span style={{ color: isDark ? '#FF7863' : '#E55A45' }}>*</span>
       </Label>
       <div style={{ display: 'grid', gap: '8px' }}>
         {actions.map((action) => {
-          const isRecommended = mappedRecommendation === action.key;
+          const isRecommended = mapRecommendationToAction(recommendedAction) === action.key;
           const isSelected = selectedAction === action.key;
-
+          
           return (
             <button
               key={action.key}
-              type="button"
               onClick={() => onSelect(action.key)}
+              type="button"
               style={{
                 display: 'flex',
                 alignItems: 'center',
                 gap: '12px',
                 padding: '10px 12px',
-                background: isSelected
-                  ? `${action.color}15`
+                background: isSelected 
+                  ? `${action.color}15` 
                   : theme.colors.background.tertiary,
                 border: `1px solid ${isSelected ? action.color : 'transparent'}`,
                 borderRadius: '6px',
                 cursor: 'pointer',
                 textAlign: 'left',
-                width: '100%',
-                transition: 'all 0.15s ease',
-              }}
-              onMouseEnter={(e) => {
-                if (!isSelected) {
-                  e.currentTarget.style.background = `${action.color}08`;
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (!isSelected) {
-                  e.currentTarget.style.background = theme.colors.background.tertiary;
-                }
+                width: '100%'
               }}
             >
-              <span style={{ color: action.color, fontSize: '16px' }}>
-                {action.icon}
-              </span>
+              <span style={{ color: action.color, fontSize: '16px' }}>{action.icon}</span>
               <div style={{ flex: 1 }}>
-                <div
-                  style={{
-                    fontSize: '13px',
-                    fontWeight: 500,
-                    color: theme.colors.text.primary,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                  }}
-                >
+                <div style={{ 
+                  fontSize: '13px', 
+                  fontWeight: 500, 
+                  color: theme.colors.text.primary,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}>
                   {action.label}
                   {isRecommended && (
-                    <span
-                      style={{
-                        fontSize: '9px',
-                        padding: '2px 6px',
-                        background: `${action.color}22`,
-                        color: action.color,
-                        borderRadius: '4px',
-                        fontWeight: 600,
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.5px',
-                      }}
-                    >
+                    <span style={{
+                      fontSize: '9px',
+                      padding: '2px 6px',
+                      background: `${action.color}22`,
+                      color: action.color,
+                      borderRadius: '4px',
+                      fontWeight: 600
+                    }}>
                       RECOMMENDED
                     </span>
                   )}
                 </div>
-                <div
-                  style={{
-                    fontSize: '11px',
-                    color: theme.colors.text.tertiary,
-                    marginTop: '2px',
-                  }}
-                >
+                <div style={{ fontSize: '11px', color: theme.colors.text.tertiary, marginTop: '2px' }}>
                   {action.description}
                 </div>
               </div>
@@ -358,103 +246,63 @@ function ActionSelector({
 // ============================================================================
 
 /**
- * Log Action Modal Component
+ * LogActionModal - Modal for human-in-the-loop action confirmation.
  * 
- * Provides a confirmation interface for human-in-the-loop action logging.
- * Users must select an action, optionally provide notes, and identify themselves
- * before confirming. This ensures all actions are logged with proper audit trail.
+ * Per Section 0.8.1: System only recommends; humans confirm via Log Action.
+ * No autonomous pausing/routing/bidding - all actions require explicit human confirmation.
  * 
- * @example
- * ```tsx
- * <LogActionModal
- *   open={isModalOpen}
- *   onClose={() => setIsModalOpen(false)}
- *   record={selectedRecord}
- *   onConfirm={async (action, notes, takenBy) => {
- *     await submitAction(action, notes, takenBy);
- *     setIsModalOpen(false);
- *   }}
- * />
- * ```
+ * This modal provides:
+ * - Summary of the record being acted upon
+ * - Action type selection with recommended action highlighted
+ * - Notes/rationale input for audit trail
+ * - User identification for accountability
+ * 
+ * @param props - LogActionModalProps
+ * @returns React component
  */
-export function LogActionModal({
-  open,
-  onClose,
-  record,
-  onConfirm,
-}: LogActionModalProps) {
+export function LogActionModal({ open, onClose, record, onConfirm }: LogActionModalProps) {
   const { theme, isDark } = useTheme();
-  
-  // Form state
   const [selectedAction, setSelectedAction] = useState<ActionType | null>(null);
   const [notes, setNotes] = useState('');
   const [takenBy, setTakenBy] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // Reset form when modal opens with a new record
+  
+  // Reset form when modal opens with new record
   useEffect(() => {
     if (open) {
-      // Pre-select the recommended action if available
+      // Pre-select recommended action if available
       const recommendedAction = mapRecommendationToAction(record.actionRecommendation);
       setSelectedAction(recommendedAction);
       setNotes('');
-      // Preserve takenBy across sessions if previously entered
-      // setTakenBy(''); // Commented out to persist user identity
-      setError(null);
+      setTakenBy('');
     }
   }, [open, record]);
-
+  
   /**
-   * Handles form submission.
-   * Validates required fields and calls the onConfirm callback.
+   * Handles form submission after validation.
+   * Calls onConfirm with the selected action, notes, and operator name.
    */
   const handleSubmit = async () => {
-    // Validate required fields
-    if (!selectedAction) {
-      setError('Please select an action');
-      return;
-    }
+    if (!selectedAction || !takenBy.trim()) return;
     
-    if (!takenBy.trim()) {
-      setError('Please enter your name');
-      return;
-    }
-
-    setError(null);
     setIsSubmitting(true);
-    
     try {
-      await onConfirm(selectedAction, notes.trim(), takenBy.trim());
-      // Close modal on successful submission
-      onClose();
-    } catch (err) {
-      // Handle submission errors
-      const errorMessage = err instanceof Error ? err.message : 'Failed to log action';
-      setError(errorMessage);
+      await onConfirm(selectedAction, notes, takenBy.trim());
     } finally {
       setIsSubmitting(false);
     }
   };
-
-  /**
-   * Handles modal close with confirmation if form has been modified.
-   */
-  const handleClose = () => {
-    if (isSubmitting) return; // Prevent closing during submission
-    onClose();
-  };
-
-  // Check if form is valid for submission
-  const isValid = selectedAction !== null && takenBy.trim().length > 0;
-
+  
+  // Form is valid when an action is selected and operator name is provided
+  const isValid = selectedAction && takenBy.trim().length > 0;
+  
   return (
-    <Dialog open={open} onOpenChange={(isOpen) => !isOpen && handleClose()}>
-      <DialogContent
-        style={{
+    <Dialog open={open} onOpenChange={(isOpen) => !isOpen && onClose()}>
+      <DialogContent 
+        className="sm:max-w-[500px]"
+        style={{ 
           background: theme.colors.background.card,
           border: `1px solid ${theme.colors.border}`,
-          maxWidth: '500px',
         }}
       >
         <DialogHeader>
@@ -465,34 +313,28 @@ export function LogActionModal({
             Confirm action for this sub ID. This will be recorded in the audit trail.
           </DialogDescription>
         </DialogHeader>
-
+        
         {/* Record Summary */}
         <RecordSummary record={record} theme={theme} isDark={isDark} />
-
+        
         {/* Action Selection */}
-        <ActionSelector
+        <ActionSelector 
           selectedAction={selectedAction}
           onSelect={setSelectedAction}
           recommendedAction={record.actionRecommendation}
           theme={theme}
           isDark={isDark}
         />
-
+        
         {/* Notes Input */}
         <div style={{ marginTop: '16px' }}>
-          <Label
-            style={{
-              color: theme.colors.text.secondary,
-              fontSize: '12px',
-            }}
-          >
+          <Label style={{ color: theme.colors.text.secondary, fontSize: '12px' }}>
             Notes / Rationale (optional)
           </Label>
           <textarea
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
             placeholder="Enter reason for this action..."
-            maxLength={1000}
             style={{
               width: '100%',
               height: '80px',
@@ -503,106 +345,36 @@ export function LogActionModal({
               borderRadius: '6px',
               color: theme.colors.text.primary,
               fontSize: '13px',
-              resize: 'vertical',
-              fontFamily: 'inherit',
-              outline: 'none',
-            }}
-            onFocus={(e) => {
-              e.currentTarget.style.borderColor = isDark ? '#D7FF32' : '#4CAF50';
-            }}
-            onBlur={(e) => {
-              e.currentTarget.style.borderColor = theme.colors.border;
+              resize: 'vertical'
             }}
           />
-          <div
-            style={{
-              fontSize: '10px',
-              color: theme.colors.text.tertiary,
-              textAlign: 'right',
-              marginTop: '4px',
-            }}
-          >
-            {notes.length}/1000 characters
-          </div>
         </div>
-
+        
         {/* Taken By Input */}
         <div style={{ marginTop: '12px' }}>
-          <Label
-            style={{
-              color: theme.colors.text.secondary,
-              fontSize: '12px',
-            }}
-          >
-            Your Name{' '}
-            <span style={{ color: isDark ? '#FF7863' : '#E55A45' }}>*</span>
+          <Label style={{ color: theme.colors.text.secondary, fontSize: '12px' }}>
+            Your Name <span style={{ color: isDark ? '#FF7863' : '#E55A45' }}>*</span>
           </Label>
           <Input
             value={takenBy}
             onChange={(e) => setTakenBy(e.target.value)}
             placeholder="Enter your name"
-            maxLength={100}
             style={{
               marginTop: '6px',
               background: theme.colors.background.tertiary,
               border: `1px solid ${theme.colors.border}`,
-              color: theme.colors.text.primary,
-            }}
-            onFocus={(e) => {
-              e.currentTarget.style.borderColor = isDark ? '#D7FF32' : '#4CAF50';
-            }}
-            onBlur={(e) => {
-              e.currentTarget.style.borderColor = theme.colors.border;
+              color: theme.colors.text.primary
             }}
           />
         </div>
-
-        {/* Error Message */}
-        {error && (
-          <div
-            style={{
-              marginTop: '12px',
-              padding: '8px 12px',
-              background: isDark ? '#FF786315' : '#E55A4515',
-              border: `1px solid ${isDark ? '#FF7863' : '#E55A45'}`,
-              borderRadius: '6px',
-              color: isDark ? '#FF7863' : '#E55A45',
-              fontSize: '12px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-            }}
-          >
-            <WarningOutlined />
-            {error}
-          </div>
-        )}
-
-        {/* Human-in-the-loop Notice */}
-        <div
-          style={{
-            marginTop: '16px',
-            padding: '10px 12px',
-            background: isDark ? '#3B82F615' : '#3B82F610',
-            border: `1px solid ${isDark ? '#3B82F650' : '#3B82F640'}`,
-            borderRadius: '6px',
-            fontSize: '11px',
-            color: theme.colors.text.tertiary,
-          }}
-        >
-          <strong style={{ color: theme.colors.text.secondary }}>Note:</strong>{' '}
-          This system recommends actions but does not execute them automatically.
-          Your confirmation will be logged for audit purposes.
-        </div>
-
+        
         <DialogFooter style={{ marginTop: '20px' }}>
-          <Button
-            variant="outline"
-            onClick={handleClose}
-            disabled={isSubmitting}
-            style={{
+          <Button 
+            variant="outline" 
+            onClick={onClose}
+            style={{ 
               borderColor: theme.colors.border,
-              color: theme.colors.text.secondary,
+              color: theme.colors.text.secondary 
             }}
           >
             Cancel
@@ -611,14 +383,9 @@ export function LogActionModal({
             onClick={handleSubmit}
             disabled={!isValid || isSubmitting}
             style={{
-              background: isValid
-                ? isDark
-                  ? '#D7FF32'
-                  : '#4CAF50'
-                : theme.colors.background.tertiary,
+              background: isValid ? (isDark ? '#D7FF32' : '#4CAF50') : theme.colors.background.tertiary,
               color: isValid ? '#000' : theme.colors.text.tertiary,
-              opacity: isSubmitting ? 0.7 : 1,
-              cursor: isValid && !isSubmitting ? 'pointer' : 'not-allowed',
+              opacity: isSubmitting ? 0.7 : 1
             }}
           >
             <SaveOutlined style={{ marginRight: '6px' }} />
@@ -630,6 +397,5 @@ export function LogActionModal({
   );
 }
 
-// Export the main component and types
-export { LogActionModal };
-export type { ActionType };
+// Re-export types for external use
+export type { LogActionModalProps };
