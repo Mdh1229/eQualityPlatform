@@ -1,0 +1,81 @@
+# Quality Compass Backend - Production Dependencies
+# ================================================
+# IMPORTANT: These versions are version-locked per Section 0.1.2 of the specification.
+# Do NOT modify versions without explicit approval. "No substitutions on runtime versions
+# or dependencies."
+#
+# Python Runtime: 3.11.8 (exact)
+#
+# All package versions are pinned exactly as specified in Section 0.5.6 of the
+# Agent Action Plan.
+
+# Core API Framework
+# ------------------
+# FastAPI web framework for building APIs with automatic OpenAPI documentation
+fastapi==0.115.6
+
+# ASGI server with standard extras (websockets, httptools, watchfiles, etc.)
+uvicorn[standard]==0.30.6
+
+# Data Validation
+# ---------------
+# Pydantic for request/response model validation and settings management
+pydantic==2.10.4
+
+# Pydantic settings extension for environment variable configuration
+# Required by backend/core/config.py for BaseSettings class
+pydantic-settings==2.7.0
+
+# HTTP Client
+# -----------
+# Async HTTP client for external API calls and health checks
+httpx==0.27.2
+
+# Retry Logic
+# -----------
+# Retry library for resilient external service calls
+tenacity==9.0.0
+
+# Date/Time Utilities
+# -------------------
+# Extended date parsing and manipulation utilities
+python-dateutil==2.9.0.post0
+
+# Numerical Computing
+# -------------------
+# NumPy for numerical operations, array processing, and statistical calculations
+numpy==2.1.3
+
+# Data Manipulation
+# -----------------
+# Pandas for DataFrame operations, data transformations, and CSV processing
+pandas==2.2.3
+
+# Machine Learning
+# ----------------
+# Scikit-learn for MiniBatchKMeans clustering (Macro Insights) and other ML algorithms
+scikit-learn==1.5.2
+
+# Google Cloud - BigQuery
+# -----------------------
+# BigQuery client for A/B/C feed extraction from data warehouse
+google-cloud-bigquery==3.29.0
+
+# Google authentication library for service account credentials
+google-auth==2.37.0
+
+# Google API client for Drive API (daily memo generation)
+google-api-python-client==2.156.0
+
+# Slack Integration
+# -----------------
+# Slack SDK for daily digest notifications
+slack-sdk==3.33.5
+
+# PostgreSQL Drivers
+# ------------------
+# Async PostgreSQL driver for FastAPI async endpoints with Supabase
+asyncpg==0.30.0
+
+# Sync PostgreSQL driver for migrations and synchronous operations
+psycopg2-binary==2.9.9

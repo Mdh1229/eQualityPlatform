@@ -1,7 +1,14 @@
+// Prisma Schema for Quality Compass System
+// This schema supports the Quality Tier Classifier with A/B/C daily aggregated feeds
+// from BigQuery or CSV uploads, backed by Supabase PostgreSQL as the system-of-record.
+//
+// PRESERVED MODELS: AnalysisRun, ClassificationResult, ActionHistory
+// NEW ADDITIONS: Enums, Fact Tables, Config Tables, Run/Output Tables, Insight Tables
+
 generator client {
-    provider = "prisma-client-js"
+    provider      = "prisma-client-js"
     binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x"]
-    output = "/home/ubuntu/quality_tier_classifier/nextjs_space/node_modules/.prisma/client"
+    output        = "/home/ubuntu/quality_tier_classifier/nextjs_space/node_modules/.prisma/client"
 }
 
 datasource db {
@@ -9,81 +16,576 @@ datasource db {
     url      = env("DATABASE_URL")
 }
 
+// =============================================================================
+// ENUMS - Transaction family, action types, and run status types
+// =============================================================================
+
+/// Transaction family types for A/B/C feeds
+enum TxFamilyEnum {
+    call
+    lead
+    click
+    redirect
+}
+
+/// Action types for classification recommendations
+/// System only recommends; humans confirm via Log Action (no autonomous actions)
+enum ActionTypeEnum {
+    pause
+    warn_14d
+    keep
+    promote
+    demote
+}
+
+/// Run status for tracking analysis run lifecycle
+enum RunStatusEnum {
+    pending
+    running
+    completed
+    failed
+}
+
+// =============================================================================
+// EXISTING MODELS - Preserved exactly for backward compatibility
+// =============================================================================
+
+/// Original AnalysisRun model - preserved for backward compatibility
+/// Stores metadata about classification analysis runs
 model AnalysisRun {
-  id          String   @id @default(cuid())
-  name        String?
-  startDate   String
-  endDate     String
-  fileName    String?
-  totalRecords Int
-  promoteCount Int    @default(0)
-  demoteCount  Int    @default(0)
-  belowMinCount Int   @default(0)
-  correctCount Int    @default(0)
-  reviewCount  Int    @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  results     ClassificationResult[]
+    id            String                 @id @default(cuid())
+    name          String?
+    startDate     String
+    endDate       String
+    fileName      String?
+    totalRecords  Int
+    promoteCount  Int                    @default(0)
+    demoteCount   Int                    @default(0)
+    belowMinCount Int                    @default(0)
+    correctCount  Int                    @default(0)
+    reviewCount   Int                    @default(0)
+    createdAt     DateTime               @default(now())
+    updatedAt     DateTime               @updatedAt
+    results       ClassificationResult[]
+
+    // Relation to extended run data
+    extendedRuns AnalysisRunExtended[]
 }
 
+/// Original ClassificationResult model - preserved for backward compatibility
+/// Stores individual subid classification results linked to analysis runs
 model ClassificationResult {
-  id                String @id @default(cuid())
-  runId             String
-  run               AnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
-  subId             String
-  vertical          String
-  trafficType       String
-  currentTier       Int?
-  currentTierLabel  String?
-  recommendedTier   String
-  recommendedTierNum Int?
-  action            String
-  actionLabel       String
-  channel           String?
-  placement         String?
-  description       String?
-  sourceName        String?
-  mediaTypeName     String?
-  campaignType      String?
-  totalCalls        Int      @default(0)
-  callsOverThreshold Int     @default(0)
-  callQualityRate   Float?
-  totalLeads        Int      @default(0)
-  totalClicks       Int      @default(0)
-  leadCtrRate       Float?
-  totalRevenue      Float    @default(0)
-  classificationReason String?
-  premiumMin        Float?
-  standardMin       Float?
-  createdAt         DateTime @default(now())
+    id                   String      @id @default(cuid())
+    runId                String
+    run                  AnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+    subId                String
+    vertical             String
+    trafficType          String
+    currentTier          Int?
+    currentTierLabel     String?
+    recommendedTier      String
+    recommendedTierNum   Int?
+    action               String
+    actionLabel          String
+    channel              String?
+    placement            String?
+    description          String?
+    sourceName           String?
+    mediaTypeName        String?
+    campaignType         String?
+    totalCalls           Int         @default(0)
+    callsOverThreshold   Int         @default(0)
+    callQualityRate      Float?
+    totalLeads           Int         @default(0)
+    totalClicks          Int         @default(0)
+    leadCtrRate          Float?
+    totalRevenue         Float       @default(0)
+    classificationReason String?
+    premiumMin           Float?
+    standardMin          Float?
+    createdAt            DateTime    @default(now())
 
-  @@index([runId])
-  @@index([action])
-  @@index([vertical])
+    // Relation to extended classification data
+    extendedResults ClassificationResultExtended[]
+
+    @@index([runId])
+    @@index([action])
+    @@index([vertical])
 }
 
+/// Original ActionHistory model - preserved for backward compatibility
+/// Stores audit trail of actions taken on subids
 model ActionHistory {
-  id              String   @id @default(cuid())
-  subId           String
-  vertical        String
-  trafficType     String
-  mediaType       String?  // Media type for filtering
-  actionTaken     String   // promote, demote, pause, below, maintain, review
-  actionLabel     String   // Human-readable label
-  previousState   String?  // Premium, Standard, Below Standard, etc.
-  newState        String?  // Premium, Standard, Below Standard, PAUSED, etc.
-  metricMode      String?  // call, lead, both
-  callQuality     Float?
-  leadQuality     Float?
-  totalRevenue    Float?
-  notes           String?  // Optional notes from user
-  takenBy         String?  // User who took action (optional)
-  createdAt       DateTime @default(now())
+    id            String    @id @default(cuid())
+    subId         String
+    vertical      String
+    trafficType   String
+    mediaType     String? // Media type for filtering
+    actionTaken   String // promote, demote, pause, below, maintain, review
+    actionLabel   String // Human-readable label
+    previousState String? // Premium, Standard, Below Standard, etc.
+    newState      String? // Premium, Standard, Below Standard, PAUSED, etc.
+    metricMode    String? // call, lead, both
+    callQuality   Float?
+    leadQuality   Float?
+    totalRevenue  Float?
+    notes         String? // Optional notes from user
+    takenBy       String? // User who took action (optional)
+    createdAt     DateTime  @default(now())
 
-  @@index([subId])
-  @@index([actionTaken])
-  @@index([createdAt])
-  @@index([vertical])
-  @@index([trafficType])
-  @@index([takenBy])
+    // Relation to outcome tracking
+    actionOutcomes InsightActionOutcome[]
+
+    @@index([subId])
+    @@index([actionTaken])
+    @@index([createdAt])
+    @@index([vertical])
+    @@index([trafficType])
+    @@index([takenBy])
+}
+
+// =============================================================================
+// FACT TABLES - A/B/C Daily Aggregated Feeds (System of Record)
+// =============================================================================
+
+/// Feed A: Daily subid-level facts
+/// Grain: date_et + vertical + traffic_type + tier + subid
+/// Contains all required measures for classification and rollup calculations
+model FactSubidDay {
+    id          String   @id @default(cuid())
+    dateEt      DateTime @db.Date // Date in Eastern Time
+    vertical    String // Medicare, Health, Life, Auto, Home
+    trafficType String // Full O&O, Partial O&O, Non O&O
+    tier        String // Current tier designation
+    subid       String // SubID identifier
+
+    // Volume measures
+    calls         Int @default(0)
+    paidCalls     Int @default(0)
+    qualPaidCalls Int @default(0)
+    transferCount Int @default(0)
+    leads         Int @default(0)
+    clicks        Int @default(0)
+    redirects     Int @default(0)
+
+    // Revenue measures
+    callRev     Float @default(0)
+    leadRev     Float @default(0)
+    clickRev    Float @default(0)
+    redirectRev Float @default(0)
+    rev         Float @default(0) // Total revenue
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    // Composite unique constraint for grain
+    @@unique([dateEt, vertical, trafficType, tier, subid], name: "fact_subid_day_grain")
+    // Performance indexes
+    @@index([dateEt])
+    @@index([vertical])
+    @@index([trafficType])
+    @@index([subid])
+    @@index([dateEt, subid])
+    @@index([vertical, trafficType])
+}
+
+/// Feed B: Daily subid slice-level facts for driver analysis
+/// Grain: date_et + vertical + traffic_type + tier + subid + tx_family + slice_name + slice_value
+/// Slice value limited to top 50 per combination by rev DESC
+/// Used for mix shift vs true degradation decomposition
+model FactSubidSliceDay {
+    id          String       @id @default(cuid())
+    dateEt      DateTime     @db.Date
+    vertical    String
+    trafficType String
+    tier        String
+    subid       String
+    txFamily    TxFamilyEnum // Transaction family: call, lead, click, redirect
+    sliceName   String // e.g., "ad_source", "keyword", "campaign"
+    sliceValue  String // e.g., specific domain, keyword value
+
+    // Volume and revenue for this slice
+    calls         Int   @default(0)
+    paidCalls     Int   @default(0)
+    qualPaidCalls Int   @default(0)
+    transferCount Int   @default(0)
+    leads         Int   @default(0)
+    clicks        Int   @default(0)
+    redirects     Int   @default(0)
+    rev           Float @default(0)
+
+    // Data coverage metric for monitoring
+    // Smart Unspecified: exclude slice_value='Unspecified' when fillRateByRev >= 0.90
+    fillRateByRev Float @default(0)
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    // Composite unique constraint for grain
+    @@unique([dateEt, vertical, trafficType, tier, subid, txFamily, sliceName, sliceValue], name: "fact_subid_slice_day_grain")
+    // Performance indexes
+    @@index([dateEt])
+    @@index([subid])
+    @@index([sliceName])
+    @@index([sliceValue])
+    @@index([dateEt, subid, txFamily, sliceName])
+    @@index([vertical, trafficType])
+}
+
+/// Feed C: Daily buyer-level facts
+/// Grain: date_et + vertical + traffic_type + tier + subid + buyer_key_variant + buyer_key
+/// Supports carrier_name and concatenated buyer key variants
+/// Used for buyer sensitivity analysis and "Path to Life" salvage simulations
+model FactSubidBuyerDay {
+    id              String   @id @default(cuid())
+    dateEt          DateTime @db.Date
+    vertical        String
+    trafficType     String
+    tier            String
+    subid           String
+    buyerKeyVariant String // e.g., "carrier_name", "carrier_name+plan_type"
+    buyerKey        String // The actual buyer identifier
+
+    // Volume and revenue for this buyer
+    calls         Int   @default(0)
+    paidCalls     Int   @default(0)
+    qualPaidCalls Int   @default(0)
+    transferCount Int   @default(0)
+    leads         Int   @default(0)
+    clicks        Int   @default(0)
+    redirects     Int   @default(0)
+    rev           Float @default(0)
+
+    // Quality metrics for this buyer
+    callQualityRate   Float? // qual_paid_calls / paid_calls
+    leadTransferRate  Float? // transfer_count / leads
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    // Composite unique constraint for grain
+    @@unique([dateEt, vertical, trafficType, tier, subid, buyerKeyVariant, buyerKey], name: "fact_subid_buyer_day_grain")
+    // Performance indexes
+    @@index([dateEt])
+    @@index([subid])
+    @@index([buyerKey])
+    @@index([buyerKeyVariant])
+    @@index([dateEt, subid, buyerKeyVariant])
+    @@index([vertical, trafficType])
+}
+
+// =============================================================================
+// CONFIG TABLES - Thresholds and Platform Parameters
+// =============================================================================
+
+/// Locked thresholds per vertical for classification decisions
+/// Maps from lib/quality-targets.ts
+/// These thresholds determine Premium/Standard/Pause tier boundaries
+model ConfigQualityThresholds {
+    id          String @id @default(cuid())
+    vertical    String // Medicare, Health, Life, Auto, Home
+    trafficType String // Full O&O, Partial O&O, Non O&O
+    metricType  String // "call" or "lead"
+
+    // Threshold values
+    premiumMin  Float // Minimum metric value for Premium tier
+    standardMin Float // Minimum metric value for Standard tier
+    pauseMax    Float // Maximum metric value before Pause recommendation
+    target      Float // Target metric value (aspirational)
+
+    // Premium tier availability based on traffic type constraints:
+    // - Full O&O: Premium allowed for all verticals
+    // - Partial O&O: Premium allowed only for Health + Life
+    // - Non O&O: Premium not allowed
+    hasPremium Boolean @default(true)
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    // Composite unique constraint
+    @@unique([vertical, trafficType, metricType], name: "config_quality_thresholds_key")
+    @@index([vertical])
+    @@index([trafficType])
+}
+
+/// Editable platform parameters for runtime configuration
+/// Default keys per Section 0.9.8:
+/// - min_calls_window: 50 (Minimum calls for actionable metric)
+/// - min_leads_window: 100 (Minimum leads for actionable metric)
+/// - metric_presence_threshold: 0.10 (Minimum revenue share for metric relevance)
+/// - warning_window_days: 14 (Days in warning period)
+/// - unspecified_keep_fillrate_threshold: 0.90 (Fill rate below which to keep 'Unspecified' slices)
+model ConfigPlatform {
+    id          String @id @default(cuid())
+    key         String @unique // Configuration key name
+    value       String // Configuration value (stored as string, parsed by application)
+    description String? // Human-readable description of the parameter
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    @@index([key])
+}
+
+// =============================================================================
+// RUN/OUTPUT TABLES - Extended Run Metadata and Windowed Aggregations
+// =============================================================================
+
+/// Extended run metadata with status tracking and additional parameters
+/// Links to existing AnalysisRun for backward compatibility
+/// Supports the new A/B/C feed-based analysis pipeline
+model AnalysisRunExtended {
+    id     String        @id @default(cuid())
+    runId  String // Reference to existing AnalysisRun
+    run    AnalysisRun   @relation(fields: [runId], references: [id], onDelete: Cascade)
+    status RunStatusEnum @default(pending)
+
+    // Run parameters
+    asOfDate        DateTime @db.Date // Analysis as-of date (exclude today from calculations)
+    trendWindowDays Int      @default(180) // Trend window (default 180 days ending yesterday)
+    computedAt      DateTime? // Timestamp when computation completed
+
+    // JSON fields for flexible storage
+    parameters Json? // Run parameters as JSON
+    errors     Json? // Error details if status=failed
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    // Relations to computed results
+    rollups                   RollupSubidWindow[]
+    classificationResults     ClassificationResultExtended[]
+    changePointInsights       InsightChangePoint[]
+    driverSummaryInsights     InsightDriverSummary[]
+    buyerSalvageInsights      InsightBuyerSalvage[]
+
+    @@index([runId])
+    @@index([status])
+    @@index([asOfDate])
+}
+
+/// Windowed aggregations for classification
+/// Contains all derived metrics computed from fact tables over the window period
+/// Derived metrics are computed at rollup time, NOT stored in fact tables
+model RollupSubidWindow {
+    id               String              @id @default(cuid())
+    extendedRunId    String
+    extendedRun      AnalysisRunExtended @relation(fields: [extendedRunId], references: [id], onDelete: Cascade)
+    subid            String
+    vertical         String
+    trafficType      String
+    windowStart      DateTime            @db.Date
+    windowEnd        DateTime            @db.Date
+
+    // Derived rate metrics (AUTHORITATIVE formulas from Section 0.8.4):
+    // qrRate = paid_calls / calls
+    // callQualityRate = qual_paid_calls / paid_calls
+    // leadTransferRate = transfer_count / leads
+    // rpLead = lead_rev / leads
+    // rpQcall = call_rev / paid_calls
+    // rpClick = click_rev / clicks
+    // rpRedirect = redirect_rev / redirects
+    qrRate           Float?
+    callQualityRate  Float?
+    leadTransferRate Float?
+    rpLead           Float?
+    rpQcall          Float?
+    rpClick          Float?
+    rpRedirect       Float?
+
+    // Volume metrics (aggregated over window)
+    totalCalls     Int   @default(0)
+    paidCalls      Int   @default(0)
+    qualPaidCalls  Int   @default(0)
+    totalLeads     Int   @default(0)
+    totalClicks    Int   @default(0)
+    totalRedirects Int   @default(0)
+    transferCount  Int   @default(0)
+
+    // Revenue metrics
+    totalRevenue Float @default(0)
+    callRev      Float @default(0)
+    leadRev      Float @default(0)
+    clickRev     Float @default(0)
+    redirectRev  Float @default(0)
+
+    // Presence metrics for metric relevance gating
+    // Metric relevant if presence >= metric_presence_threshold (default 0.10)
+    // callPresence = call_rev / rev
+    // leadPresence = lead_rev / rev
+    callPresence Float @default(0)
+    leadPresence Float @default(0)
+
+    createdAt DateTime @default(now())
+
+    @@unique([extendedRunId, subid, vertical, trafficType], name: "rollup_subid_window_key")
+    @@index([extendedRunId])
+    @@index([subid])
+    @@index([vertical, trafficType])
+}
+
+/// Enhanced classification result with audit packet
+/// Links to AnalysisRunExtended and optionally to existing ClassificationResult
+/// Contains full decision audit trail for explainability
+model ClassificationResultExtended {
+    id               String               @id @default(cuid())
+    extendedRunId    String
+    extendedRun      AnalysisRunExtended  @relation(fields: [extendedRunId], references: [id], onDelete: Cascade)
+    resultId         String? // Optional link to existing ClassificationResult
+    result           ClassificationResult? @relation(fields: [resultId], references: [id], onDelete: SetNull)
+    subid            String
+    vertical         String
+    trafficType      String
+
+    // Classification decision
+    // recommendedClass: Premium, Standard, Pause, Warn, Watch
+    recommendedClass     String
+    actionRecommendation ActionTypeEnum // pause, warn_14d, keep, promote, demote
+
+    // Confidence and reasoning
+    // confidence: High, Med, Low
+    confidence  String
+    reasonCodes String[] // Array of reason codes explaining the decision
+
+    // Warning tracking
+    // warning_until = as_of_date + warning_window_days (default 14)
+    // No auto-pause during warning period
+    warningUntil DateTime?
+
+    // Audit packet JSON containing:
+    // - thresholds used for classification
+    // - relevancy check results (metric presence >= 10%)
+    // - volume check results (calls >= 50 OR leads >= 100)
+    // - rule fired (which threshold triggered tier assignment)
+    // - why warning vs pause vs keep
+    auditPacket Json?
+
+    createdAt DateTime @default(now())
+
+    @@unique([extendedRunId, subid], name: "classification_result_extended_key")
+    @@index([extendedRunId])
+    @@index([resultId])
+    @@index([subid])
+    @@index([recommendedClass])
+    @@index([actionRecommendation])
+    @@index([vertical, trafficType])
+}
+
+// =============================================================================
+// INSIGHT TABLES - WOW Insights Layer
+// =============================================================================
+
+/// CUSUM change-point detection results ("It Broke Here")
+/// Detects mean shifts in metric time series
+/// Algorithm: CUSUM with rolling z-score backing
+model InsightChangePoint {
+    id            String              @id @default(cuid())
+    extendedRunId String
+    extendedRun   AnalysisRunExtended @relation(fields: [extendedRunId], references: [id], onDelete: Cascade)
+    subid         String
+    breakDate     DateTime            @db.Date // Date when change point was detected
+    affectedMetrics String[] // Metrics affected by the change (e.g., ["call_quality_rate", "lead_transfer_rate"])
+    cusumValue    Float // CUSUM statistic value at break point
+    confidence    String // High, Med, Low confidence level
+
+    createdAt DateTime @default(now())
+
+    @@index([extendedRunId])
+    @@index([subid])
+    @@index([breakDate])
+}
+
+/// Mix shift decomposition results (Driver Analysis)
+/// Decomposes metric changes into mix effect vs performance effect
+/// Uses Oaxaca-Blinder style decomposition
+/// Baseline period: days -30 to -16, Bad period: days -15 to -1
+model InsightDriverSummary {
+    id            String              @id @default(cuid())
+    extendedRunId String
+    extendedRun   AnalysisRunExtended @relation(fields: [extendedRunId], references: [id], onDelete: Cascade)
+    subid         String
+    sliceName     String // e.g., "ad_source", "keyword"
+    metricName    String // Metric being analyzed
+
+    // Period values
+    baselineValue Float // Metric value during baseline period (days -30 to -16)
+    badValue      Float // Metric value during bad period (days -15 to -1)
+
+    // Decomposition results
+    // mixEffect: Change due to shift in traffic composition
+    // performanceEffect: Change due to metric degradation within same mix
+    mixEffect         Float
+    performanceEffect Float
+    totalDelta        Float // Total change = baselineValue - badValue
+
+    // Ranking for prioritization
+    rank Int // Rank by absolute impact contribution
+
+    createdAt DateTime @default(now())
+
+    @@index([extendedRunId])
+    @@index([subid])
+    @@index([sliceName])
+    @@index([metricName])
+    @@index([rank])
+}
+
+/// "Path to Life" buyer salvage simulation results
+/// Simulates impact of removing bottom-performing buyers
+/// Uses Feed C (fact_subid_buyer_day) for buyer-level analysis
+model InsightBuyerSalvage {
+    id            String              @id @default(cuid())
+    extendedRunId String
+    extendedRun   AnalysisRunExtended @relation(fields: [extendedRunId], references: [id], onDelete: Cascade)
+    subid         String
+    buyerKey      String // Buyer identifier being evaluated
+
+    // Simulation results
+    expectedQualityDelta Float // Expected quality improvement from removal
+    revenueImpact        Float // Revenue loss from removal (negative = loss)
+    netScore             Float // Net recommendation score
+
+    // Ranking and recommendation
+    rank                Int // Rank among salvage options (top 3 shown)
+    removalRecommended  Boolean @default(false) // Whether removal is recommended
+
+    createdAt DateTime @default(now())
+
+    @@index([extendedRunId])
+    @@index([subid])
+    @@index([buyerKey])
+    @@index([rank])
+}
+
+/// Difference-in-differences action outcome tracking
+/// Measures the causal impact of actions taken on subids
+/// Compares pre/post periods against matched cohort that did NOT receive action
+model InsightActionOutcome {
+    id            String        @id @default(cuid())
+    actionId      String
+    action        ActionHistory @relation(fields: [actionId], references: [id], onDelete: Cascade)
+
+    // Analysis periods (14 days before and after action)
+    prePeriodStart  DateTime @db.Date
+    prePeriodEnd    DateTime @db.Date
+    postPeriodStart DateTime @db.Date
+    postPeriodEnd   DateTime @db.Date
+
+    // Outcome metrics
+    qualityDelta  Float // Quality change (post - pre, adjusted for cohort)
+    revenueImpact Float // Revenue impact (post - pre, adjusted for cohort)
+
+    // Outcome classification
+    // Label based on qualityDelta and revenueImpact
+    outcomeLabel String // e.g., "improved", "declined", "no_change"
+
+    // Matched cohort information
+    cohortSize Int // Number of similar subids in matched cohort
+
+    createdAt DateTime @default(now())
+
+    @@index([actionId])
+    @@index([outcomeLabel])
+    @@index([prePeriodStart])
+    @@index([postPeriodEnd])
 }
