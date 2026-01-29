@@ -6,6 +6,7 @@ import { QUALITY_TARGETS, VOLUME_THRESHOLDS, VERTICALS, TRAFFIC_TYPES } from '@/
 import { brandColors } from '@/lib/theme-config';
 import { ChevronLeft, ChevronDown, ChevronRight, Save, RotateCcw, Settings, Info } from 'lucide-react';
 import Link from 'next/link';
+import type { ConfigPlatform } from '@/lib/types';
 
 interface ThresholdEdit {
   vertical: string;
@@ -37,6 +38,19 @@ export default function SettingsPage() {
   });
   const [hasChanges, setHasChanges] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
+
+  // Platform Configuration state (Section 0.9.8)
+  // These values control volume gating, metric relevance thresholds, and warning windows
+  const [configPlatform, setConfigPlatform] = useState<ConfigPlatform>({
+    min_calls_window: 50,  // default per Section 0.9.8
+    min_leads_window: 100, // default per Section 0.9.8
+    metric_presence_threshold: 0.10,  // default per Section 0.9.8
+    warning_window_days: 14,  // default per Section 0.9.8
+    unspecified_keep_fillrate_threshold: 0.90  // default per Section 0.9.8
+  });
+  const [configPlatformEdits, setConfigPlatformEdits] = useState<Partial<ConfigPlatform>>({});
+  const [isSavingConfig, setIsSavingConfig] = useState(false);
+  const [configSaveStatus, setConfigSaveStatus] = useState<'idle' | 'success' | 'error'>('idle');
 
   const getEditedValue = (vertical: string, trafficType: string, metric: 'call' | 'lead', field: 'premiumMin' | 'standardMin' | 'pauseMax' | 'target'): number | undefined => {
     const edit = thresholdEdits.find(
@@ -72,9 +86,54 @@ export default function SettingsPage() {
     setHasChanges(true);
   };
 
+  /**
+   * Handler for platform configuration parameter changes.
+   * Updates the edit state and marks form as having changes.
+   * @param key - The config parameter key to update
+   * @param value - The new numeric value
+   */
+  const handleConfigPlatformChange = (key: keyof ConfigPlatform, value: number) => {
+    setConfigPlatformEdits(prev => ({ ...prev, [key]: value }));
+    setHasChanges(true);
+  };
+
+  /**
+   * Saves platform configuration to the FastAPI backend via proxy.
+   * Updates local state on success and displays status feedback.
+   */
+  const saveConfigPlatform = async () => {
+    setIsSavingConfig(true);
+    setConfigSaveStatus('idle');
+    try {
+      const updatedConfig = { ...configPlatform, ...configPlatformEdits };
+      // POST to FastAPI backend via proxy (Section 0.4.1)
+      const response = await fetch('/backend-api/config/platform', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedConfig)
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to save: ${response.statusText}`);
+      }
+      
+      setConfigPlatform(updatedConfig);
+      setConfigPlatformEdits({});
+      setConfigSaveStatus('success');
+      // Clear success message after 3 seconds
+      setTimeout(() => setConfigSaveStatus('idle'), 3000);
+    } catch (error) {
+      console.error('Failed to save config_platform:', error);
+      setConfigSaveStatus('error');
+    } finally {
+      setIsSavingConfig(false);
+    }
+  };
+
   const resetChanges = () => {
     setThresholdEdits([]);
     setVolumeEdits({ call: VOLUME_THRESHOLDS.call, lead: VOLUME_THRESHOLDS.lead });
+    setConfigPlatformEdits({});  // Reset platform config edits
     setHasChanges(false);
   };
 
@@ -248,6 +307,142 @@ export default function SettingsPage() {
                 onChange={(e) => handleVolumeChange('lead', parseInt(e.target.value) || 0)}
                 style={{ ...inputStyle, width: '100px' }}
               />
+            </div>
+          </div>
+        </div>
+
+        {/* Platform Configuration Card - NEW (Section 0.4.1, 0.9.8) */}
+        <div style={cardStyle}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
+            <h2 style={{ fontSize: '18px', fontWeight: 600, margin: 0 }}>Platform Configuration</h2>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              {configSaveStatus === 'success' && (
+                <span style={{ color: brandColors.excelGreen, fontSize: '12px' }}>✓ Saved</span>
+              )}
+              {configSaveStatus === 'error' && (
+                <span style={{ color: brandColors.excelOrange, fontSize: '12px' }}>✗ Error saving</span>
+              )}
+              <button
+                onClick={saveConfigPlatform}
+                disabled={Object.keys(configPlatformEdits).length === 0 || isSavingConfig}
+                style={{
+                  ...buttonStyle,
+                  backgroundColor: Object.keys(configPlatformEdits).length > 0 
+                    ? brandColors.excelGreen 
+                    : (isDark ? theme.colors.background.primary : '#e2e8f0'),
+                  color: Object.keys(configPlatformEdits).length > 0 
+                    ? '#000' 
+                    : (isDark ? theme.colors.text.secondary : '#94a3b8'),
+                  padding: '6px 12px',
+                  fontSize: '12px',
+                }}
+              >
+                {isSavingConfig ? 'Saving...' : 'Save Config'}
+              </button>
+            </div>
+          </div>
+          
+          <div style={{
+            backgroundColor: isDark ? 'rgba(190, 160, 254, 0.1)' : '#f5f3ff',
+            border: `1px solid ${isDark ? 'rgba(190, 160, 254, 0.3)' : '#e9d5ff'}`,
+            borderRadius: '8px',
+            padding: '16px',
+            marginBottom: '20px',
+            fontSize: '13px',
+            lineHeight: 1.6,
+          }}>
+            <p style={{ margin: '0 0 8px 0', fontWeight: 500 }}>Platform-wide parameters for classification rules:</p>
+            <ul style={{ margin: 0, paddingLeft: '20px' }}>
+              <li>These settings control volume gating, metric relevance thresholds, and warning windows</li>
+              <li>Changes here affect all classification calculations across verticals</li>
+            </ul>
+          </div>
+          
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '24px' }}>
+            {/* Min Calls Window */}
+            <div>
+              <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', color: isDark ? theme.colors.text.secondary : '#64748b' }}>
+                Minimum Calls for Action
+              </label>
+              <input
+                type="number"
+                value={configPlatformEdits.min_calls_window ?? configPlatform.min_calls_window}
+                onChange={(e) => handleConfigPlatformChange('min_calls_window', parseInt(e.target.value) || 0)}
+                style={{ ...inputStyle, width: '100px' }}
+              />
+              <p style={{ fontSize: '11px', color: theme.colors.text.tertiary, marginTop: '4px' }}>
+                Sources below this threshold show &quot;Low Volume&quot; status (default: 50)
+              </p>
+            </div>
+            
+            {/* Min Leads Window */}
+            <div>
+              <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', color: isDark ? theme.colors.text.secondary : '#64748b' }}>
+                Minimum Leads for Action
+              </label>
+              <input
+                type="number"
+                value={configPlatformEdits.min_leads_window ?? configPlatform.min_leads_window}
+                onChange={(e) => handleConfigPlatformChange('min_leads_window', parseInt(e.target.value) || 0)}
+                style={{ ...inputStyle, width: '100px' }}
+              />
+              <p style={{ fontSize: '11px', color: theme.colors.text.tertiary, marginTop: '4px' }}>
+                Minimum leads required for actionable lead metrics (default: 100)
+              </p>
+            </div>
+            
+            {/* Metric Presence Threshold */}
+            <div>
+              <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', color: isDark ? theme.colors.text.secondary : '#64748b' }}>
+                Metric Presence Threshold
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                max="1"
+                value={configPlatformEdits.metric_presence_threshold ?? configPlatform.metric_presence_threshold}
+                onChange={(e) => handleConfigPlatformChange('metric_presence_threshold', parseFloat(e.target.value) || 0)}
+                style={{ ...inputStyle, width: '100px' }}
+              />
+              <p style={{ fontSize: '11px', color: theme.colors.text.tertiary, marginTop: '4px' }}>
+                Minimum revenue share for metric relevance (default: 0.10 = 10%)
+              </p>
+            </div>
+            
+            {/* Warning Window Days */}
+            <div>
+              <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', color: isDark ? theme.colors.text.secondary : '#64748b' }}>
+                Warning Window (Days)
+              </label>
+              <input
+                type="number"
+                value={configPlatformEdits.warning_window_days ?? configPlatform.warning_window_days}
+                onChange={(e) => handleConfigPlatformChange('warning_window_days', parseInt(e.target.value) || 0)}
+                style={{ ...inputStyle, width: '100px' }}
+              />
+              <p style={{ fontSize: '11px', color: theme.colors.text.tertiary, marginTop: '4px' }}>
+                Days in warning period before pause action (default: 14)
+              </p>
+            </div>
+            
+            {/* Unspecified Keep Fillrate Threshold */}
+            <div style={{ gridColumn: 'span 2' }}>
+              <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', color: isDark ? theme.colors.text.secondary : '#64748b' }}>
+                Unspecified Keep Fillrate Threshold
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                max="1"
+                value={configPlatformEdits.unspecified_keep_fillrate_threshold ?? configPlatform.unspecified_keep_fillrate_threshold}
+                onChange={(e) => handleConfigPlatformChange('unspecified_keep_fillrate_threshold', parseFloat(e.target.value) || 0)}
+                style={{ ...inputStyle, width: '100px' }}
+              />
+              <p style={{ fontSize: '11px', color: theme.colors.text.tertiary, marginTop: '4px' }}>
+                Fill rate below which &quot;Unspecified&quot; slice values are kept in driver analysis (default: 0.90 = 90%)
+              </p>
             </div>
           </div>
         </div>
