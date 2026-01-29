@@ -466,3 +466,19 @@ class FeedType(str, Enum):
     A = "A"
     B = "B"
     C = "C"
+
+
+class Confidence(str, Enum):
+    """
+    Confidence level for classification decisions.
+    
+    Source: Section 0.8.5 Decision Outputs
+    
+    Indicates the confidence level of a classification decision:
+    - HIGH: Clear metrics, sufficient volume, no edge cases
+    - MED: Some metrics near thresholds or moderate volume
+    - LOW: Edge cases, low volume, conflicting signals
+    """
+    HIGH = "High"
+    MED = "Med"
+    LOW = "Low"

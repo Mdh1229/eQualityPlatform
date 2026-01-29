@@ -59,6 +59,8 @@ from backend.models.enums import (
     RunStatus,
     GuardrailTag,
     FeedType,
+    # Classification Confidence
+    Confidence,
 )
 
 
@@ -246,6 +248,9 @@ __all__ = [
     "RunStatus",
     "GuardrailTag",
     "FeedType",
+    
+    # Classification Confidence
+    "Confidence",
     
     # =========================================================================
     # Schemas - Core Domain

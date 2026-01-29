@@ -35,9 +35,6 @@ from backend.models.schemas import (
     ClassificationInput,
     ClassificationResult,
     MetricClassification,
-    ThresholdConfig,
-    TrafficTypeThresholds,
-    VerticalConfig,
 )
 
 
@@ -45,39 +42,47 @@ from backend.models.schemas import (
 # Default Thresholds - Mapped from lib/quality-targets.ts
 # These are the authoritative 2026 thresholds per vertical.
 # Structure: { vertical: { metric: { premium, standard } } }
+#
+# Note: Using simple dicts for internal threshold storage rather than
+# ThresholdConfig Pydantic model to keep classification logic simple.
+# The ThresholdConfig model is used for API serialization.
 # =============================================================================
 
-DEFAULT_THRESHOLDS: Dict[str, Dict[str, ThresholdConfig]] = {
+# Simple threshold dictionary type for internal use
+InternalThreshold = Dict[str, float]  # {"premium": float, "standard": float}
+VerticalThresholds = Dict[str, InternalThreshold]  # {"call_quality": {...}, "lead_transfer": {...}}
+
+DEFAULT_THRESHOLDS: Dict[str, VerticalThresholds] = {
     Vertical.MEDICARE.value: {
-        "call_quality": ThresholdConfig(premium=0.75, standard=0.65),
-        "lead_transfer": ThresholdConfig(premium=0.70, standard=0.60),
+        "call_quality": {"premium": 0.75, "standard": 0.65},
+        "lead_transfer": {"premium": 0.70, "standard": 0.60},
     },
     Vertical.HEALTH.value: {
-        "call_quality": ThresholdConfig(premium=0.70, standard=0.60),
-        "lead_transfer": ThresholdConfig(premium=0.65, standard=0.55),
+        "call_quality": {"premium": 0.70, "standard": 0.60},
+        "lead_transfer": {"premium": 0.65, "standard": 0.55},
     },
     Vertical.LIFE.value: {
-        "call_quality": ThresholdConfig(premium=0.70, standard=0.60),
-        "lead_transfer": ThresholdConfig(premium=0.65, standard=0.55),
+        "call_quality": {"premium": 0.70, "standard": 0.60},
+        "lead_transfer": {"premium": 0.65, "standard": 0.55},
     },
     Vertical.AUTO.value: {
-        "call_quality": ThresholdConfig(premium=0.65, standard=0.55),
-        "lead_transfer": ThresholdConfig(premium=0.60, standard=0.50),
+        "call_quality": {"premium": 0.65, "standard": 0.55},
+        "lead_transfer": {"premium": 0.60, "standard": 0.50},
     },
     Vertical.HOME.value: {
-        "call_quality": ThresholdConfig(premium=0.65, standard=0.55),
-        "lead_transfer": ThresholdConfig(premium=0.60, standard=0.50),
+        "call_quality": {"premium": 0.65, "standard": 0.55},
+        "lead_transfer": {"premium": 0.60, "standard": 0.50},
     },
 }
 
 # Threshold cache to avoid repeated config loading
-_threshold_cache: Dict[str, Dict[str, ThresholdConfig]] = {}
+_threshold_cache: Dict[str, VerticalThresholds] = {}
 
 
 def get_thresholds_for_vertical(
     vertical: Vertical,
     use_cache: bool = True
-) -> Dict[str, ThresholdConfig]:
+) -> VerticalThresholds:
     """
     Get quality thresholds for a specific vertical.
     
@@ -89,7 +94,7 @@ def get_thresholds_for_vertical(
         use_cache: Whether to use cached thresholds (default True)
     
     Returns:
-        Dict mapping metric name to ThresholdConfig with premium/standard values
+        Dict mapping metric name to threshold dict with premium/standard values
     """
     vertical_key = vertical.value if isinstance(vertical, Vertical) else str(vertical)
     
@@ -281,6 +286,9 @@ def determine_action_recommendation(
     - promote: Upgrade to higher tier
     - demote: Downgrade to lower tier
     
+    The ActionType enum follows the original TypeScript classification-engine.ts
+    with detailed action types for Premium and Standard sources.
+    
     Args:
         recommended_class: The recommended classification
         current_tier: The source's current tier (if known)
@@ -294,36 +302,44 @@ def determine_action_recommendation(
     
     # Handle each recommended class
     if recommended_class == "Pause":
-        return ActionType.PAUSE
+        return ActionType.PAUSE_IMMEDIATE
     
     elif recommended_class == "Warn":
-        return ActionType.WARN_14D
+        # 14-day warning - typically demote with warning for premium sources
+        if current_tier_lower == "premium":
+            return ActionType.DEMOTE_WITH_WARNING
+        else:
+            return ActionType.WARNING_14_DAY
     
     elif recommended_class == "Watch":
-        # Insufficient data - keep current status
-        return ActionType.KEEP
+        # Insufficient data - needs review
+        if current_tier_lower == "premium":
+            return ActionType.KEEP_PREMIUM_WATCH
+        else:
+            return ActionType.INSUFFICIENT_VOLUME
     
     elif recommended_class == "Premium":
         if current_tier_lower == "premium":
-            return ActionType.KEEP
+            return ActionType.KEEP_PREMIUM
         elif current_tier_lower == "standard":
-            return ActionType.PROMOTE
+            return ActionType.UPGRADE_TO_PREMIUM
         else:
-            # No current tier or paused - promote
-            return ActionType.PROMOTE
+            # No current tier or paused - recommend for premium
+            return ActionType.UPGRADE_TO_PREMIUM
     
     elif recommended_class == "Standard":
         if current_tier_lower == "standard":
-            return ActionType.KEEP
+            return ActionType.KEEP_STANDARD
         elif current_tier_lower == "premium":
-            return ActionType.DEMOTE
+            return ActionType.DEMOTE_TO_STANDARD
         elif current_tier_lower == "pause":
-            return ActionType.PROMOTE
+            # Coming off pause to standard
+            return ActionType.KEEP_STANDARD
         else:
-            return ActionType.KEEP
+            return ActionType.KEEP_STANDARD
     
-    # Default case
-    return ActionType.KEEP
+    # Default case - review needed
+    return ActionType.REVIEW
 
 
 def calculate_warning_until(
@@ -392,35 +408,38 @@ def build_reason_codes(
         reasons.append("LEAD_NOT_RELEVANT: Lead revenue < 10% of total revenue")
     
     # Add volume gating reasons
+    # Note: ClassificationInput uses camelCase field names (totalCalls, totalLeadsDialed)
     if call_relevant and not call_actionable:
-        reasons.append(f"CALL_LOW_VOLUME: Only {input_data.calls} calls (min 50)")
+        reasons.append(f"CALL_LOW_VOLUME: Only {input_data.totalCalls or 0} calls (min 50)")
     if lead_relevant and not lead_actionable:
-        reasons.append(f"LEAD_LOW_VOLUME: Only {input_data.leads} leads (min 100)")
+        reasons.append(f"LEAD_LOW_VOLUME: Only {input_data.totalLeadsDialed or 0} leads (min 100)")
     
     # Add metric tier reasons
+    # Note: ClassificationInput uses camelCase field names (callQualityRate, leadTransferRate)
     if call_tier == MetricTier.PAUSE:
-        call_rate = input_data.call_quality_rate or 0
+        call_rate = input_data.callQualityRate or 0
         reasons.append(f"CALL_QUALITY_BELOW_STANDARD: {call_rate:.1%} call quality rate")
     elif call_tier == MetricTier.STANDARD:
-        call_rate = input_data.call_quality_rate or 0
+        call_rate = input_data.callQualityRate or 0
         reasons.append(f"CALL_QUALITY_AT_STANDARD: {call_rate:.1%} call quality rate")
     elif call_tier == MetricTier.PREMIUM:
-        call_rate = input_data.call_quality_rate or 0
+        call_rate = input_data.callQualityRate or 0
         reasons.append(f"CALL_QUALITY_AT_PREMIUM: {call_rate:.1%} call quality rate")
     
     if lead_tier == MetricTier.PAUSE:
-        lead_rate = input_data.lead_transfer_rate or 0
+        lead_rate = input_data.leadTransferRate or 0
         reasons.append(f"LEAD_TRANSFER_BELOW_STANDARD: {lead_rate:.1%} transfer rate")
     elif lead_tier == MetricTier.STANDARD:
-        lead_rate = input_data.lead_transfer_rate or 0
+        lead_rate = input_data.leadTransferRate or 0
         reasons.append(f"LEAD_TRANSFER_AT_STANDARD: {lead_rate:.1%} transfer rate")
     elif lead_tier == MetricTier.PREMIUM:
-        lead_rate = input_data.lead_transfer_rate or 0
+        lead_rate = input_data.leadTransferRate or 0
         reasons.append(f"LEAD_TRANSFER_AT_PREMIUM: {lead_rate:.1%} transfer rate")
     
     # Add traffic-type constraint reasons
+    # Note: ClassificationInput uses camelCase field name (trafficType)
     if not premium_allowed and (call_tier == MetricTier.PREMIUM or lead_tier == MetricTier.PREMIUM):
-        reasons.append(f"PREMIUM_NOT_ALLOWED: Traffic type {input_data.traffic_type} restricts Premium tier")
+        reasons.append(f"PREMIUM_NOT_ALLOWED: Traffic type {input_data.trafficType} restricts Premium tier")
     
     # Add class determination reason
     if recommended_class == "Warn":
@@ -495,14 +514,14 @@ def determine_confidence(
     if confidence_score >= 70:
         return Confidence.HIGH
     elif confidence_score >= 40:
-        return Confidence.MEDIUM
+        return Confidence.MED
     else:
         return Confidence.LOW
 
 
 def classify_record(
     input_data: ClassificationInput,
-    thresholds: Optional[Dict[str, ThresholdConfig]] = None,
+    thresholds: Optional[VerticalThresholds] = None,
     as_of_date: Optional[date] = None
 ) -> ClassificationResult:
     """
@@ -535,47 +554,53 @@ def classify_record(
     if thresholds is None:
         thresholds = get_thresholds_for_vertical(vertical)
     
-    # Extract threshold values
-    call_thresholds = thresholds.get("call_quality", ThresholdConfig(premium=0.70, standard=0.60))
-    lead_thresholds = thresholds.get("lead_transfer", ThresholdConfig(premium=0.65, standard=0.55))
+    # Extract threshold values (thresholds are now simple dicts)
+    call_thresholds = thresholds.get("call_quality", {"premium": 0.70, "standard": 0.60})
+    lead_thresholds = thresholds.get("lead_transfer", {"premium": 0.65, "standard": 0.55})
     
     # Calculate metric presence per Section 0.8.4
     # call_presence = call_rev / rev, lead_presence = lead_rev / rev
-    total_rev = input_data.rev or 0.0
-    call_presence = (input_data.call_rev / total_rev) if total_rev > 0 else 0.0
-    lead_presence = (input_data.lead_rev / total_rev) if total_rev > 0 else 0.0
+    # For ClassificationInput schema without rev breakdown, use field availability
+    total_rev = getattr(input_data, 'totalRevenue', None) or 0.0
+    call_rev = getattr(input_data, 'callRevenue', None) or total_rev  # Assume all if not provided
+    lead_rev = getattr(input_data, 'leadRevenue', None) or 0.0
+    
+    call_presence = (call_rev / total_rev) if total_rev > 0 else 1.0  # Default to relevant if no rev
+    lead_presence = (lead_rev / total_rev) if total_rev > 0 else 0.0
     
     # Check metric relevance per Section 0.8.4
     # Metric relevant if presence >= metric_presence_threshold (default 0.10)
+    # For simplified input without revenue breakdown, always treat call metric as relevant
+    # if callQualityRate is provided, and lead metric as relevant if leadTransferRate is provided
     metric_presence_threshold = settings.metric_presence_threshold
-    call_relevant = call_presence >= metric_presence_threshold
-    lead_relevant = lead_presence >= metric_presence_threshold
+    call_relevant = call_presence >= metric_presence_threshold or input_data.callQualityRate is not None
+    lead_relevant = lead_presence >= metric_presence_threshold or input_data.leadTransferRate is not None
     
     # Check volume sufficiency per Section 0.8.4
     # calls >= min_calls_window (50), leads >= min_leads_window (100)
-    call_actionable = (input_data.calls or 0) >= settings.min_calls_window
-    lead_actionable = (input_data.leads or 0) >= settings.min_leads_window
+    call_actionable = (input_data.totalCalls or 0) >= settings.min_calls_window
+    lead_actionable = (input_data.totalLeadsDialed or 0) >= settings.min_leads_window
     
     # Evaluate call quality tier
     call_tier = evaluate_metric_tier(
-        metric_value=input_data.call_quality_rate,
-        premium_threshold=call_thresholds.premium,
-        standard_threshold=call_thresholds.standard,
+        metric_value=input_data.callQualityRate,
+        premium_threshold=call_thresholds["premium"],
+        standard_threshold=call_thresholds["standard"],
         is_relevant=call_relevant,
         is_actionable=call_actionable
     )
     
     # Evaluate lead transfer tier
     lead_tier = evaluate_metric_tier(
-        metric_value=input_data.lead_transfer_rate,
-        premium_threshold=lead_thresholds.premium,
-        standard_threshold=lead_thresholds.standard,
+        metric_value=input_data.leadTransferRate,
+        premium_threshold=lead_thresholds["premium"],
+        standard_threshold=lead_thresholds["standard"],
         is_relevant=lead_relevant,
         is_actionable=lead_actionable
     )
     
     # Check premium eligibility per traffic type constraints
-    traffic_type = input_data.traffic_type if isinstance(input_data.traffic_type, TrafficType) else TrafficType(input_data.traffic_type)
+    traffic_type = input_data.trafficType if isinstance(input_data.trafficType, TrafficType) else TrafficType(input_data.trafficType)
     premium_allowed = check_premium_eligibility(traffic_type, vertical)
     
     # Get current tier if available
@@ -598,7 +623,7 @@ def classify_record(
     
     # Calculate warning_until if applicable
     warning_until = None
-    if action_recommendation == ActionType.WARN_14D:
+    if action_recommendation in [ActionType.WARNING_14_DAY, ActionType.DEMOTE_WITH_WARNING]:
         warning_until = calculate_warning_until(as_of_date)
     
     # Build reason codes
@@ -625,55 +650,102 @@ def classify_record(
         lead_actionable=lead_actionable
     )
     
-    # Build metric classifications for detail
+    # Build metric classifications for detail using schema-compatible fields
+    # MetricClassification schema expects: metricType, value, volume, volumeThreshold,
+    # hasInsufficientVolume, tier, premiumMin, standardMin, pauseMax, target
+    from backend.models.enums import MetricType
+    
     call_classification = MetricClassification(
-        metric_name="call_quality",
-        metric_value=input_data.call_quality_rate,
+        metricType=MetricType.CALL,
+        value=input_data.callQualityRate,
+        volume=input_data.totalCalls,
+        volumeThreshold=settings.min_calls_window,
+        hasInsufficientVolume=not call_actionable,
         tier=call_tier,
-        is_relevant=call_relevant,
-        is_actionable=call_actionable,
-        premium_threshold=call_thresholds.premium,
-        standard_threshold=call_thresholds.standard
+        premiumMin=call_thresholds["premium"],
+        standardMin=call_thresholds["standard"],
+        pauseMax=call_thresholds["standard"] - 0.01,  # Pause is below standard
+        target=call_thresholds["premium"]
     )
     
     lead_classification = MetricClassification(
-        metric_name="lead_transfer",
-        metric_value=input_data.lead_transfer_rate,
+        metricType=MetricType.LEAD,
+        value=input_data.leadTransferRate,
+        volume=input_data.totalLeadsDialed or 0,
+        volumeThreshold=settings.min_leads_window,
+        hasInsufficientVolume=not lead_actionable,
         tier=lead_tier,
-        is_relevant=lead_relevant,
-        is_actionable=lead_actionable,
-        premium_threshold=lead_thresholds.premium,
-        standard_threshold=lead_thresholds.standard
+        premiumMin=lead_thresholds["premium"],
+        standardMin=lead_thresholds["standard"],
+        pauseMax=lead_thresholds["standard"] - 0.01,  # Pause is below standard
+        target=lead_thresholds["premium"]
     )
     
-    # Construct and return the classification result
+    # Map recommended_class to recommended tier string
+    # Use consistent title case for all tiers (Premium, Standard, Pause)
+    tier_mapping = {
+        "Premium": "Premium",
+        "Standard": "Standard",
+        "Pause": "Pause",
+        "Warn": "Standard",  # Warning keeps at Standard tier (with warning flag)
+        "Watch": "Standard",  # Watch keeps at Standard tier (with watch flag)
+    }
+    recommended_tier = tier_mapping.get(recommended_class, "Standard")
+    
+    # Map action_recommendation to ActionType and label
+    action_label_mapping = {
+        ActionType.PAUSE_IMMEDIATE: "⛔ Pause Immediately",
+        ActionType.WARNING_14_DAY: "⚠️ Warning (14 days)",
+        ActionType.KEEP_STANDARD: "✓ Keep Standard",
+        ActionType.KEEP_PREMIUM: "✓ Keep Premium",
+        ActionType.KEEP_PREMIUM_WATCH: "👀 Keep Premium (Watch)",
+        ActionType.UPGRADE_TO_PREMIUM: "⬆️ Promote to Premium",
+        ActionType.KEEP_STANDARD_CLOSE: "📈 Keep Standard (Close to Premium)",
+        ActionType.DEMOTE_TO_STANDARD: "↓ Demote to Standard",
+        ActionType.DEMOTE_WITH_WARNING: "↓ Demote with Warning",
+        ActionType.INSUFFICIENT_VOLUME: "📊 Insufficient Volume",
+        ActionType.NO_PREMIUM_AVAILABLE: "🚫 No Premium Available",
+        ActionType.REVIEW: "🔍 Needs Review",
+    }
+    action_label = action_label_mapping.get(action_recommendation, "Needs Review")
+    
+    # Build reason string from reason codes
+    reason = "; ".join(reason_codes) if reason_codes else "Classification completed"
+    
+    # Determine if paused
+    is_paused = action_recommendation == ActionType.PAUSE_IMMEDIATE
+    
+    # Determine if has warning
+    has_warning = action_recommendation in [ActionType.WARNING_14_DAY, ActionType.DEMOTE_WITH_WARNING]
+    
+    # Determine insufficient volume
+    has_insufficient_volume = not call_actionable and not lead_actionable
+    
+    # Construct and return the classification result matching schema
     return ClassificationResult(
-        sub_id=input_data.sub_id,
-        vertical=vertical,
-        traffic_type=traffic_type,
-        call_tier=call_tier,
-        lead_tier=lead_tier,
-        recommended_class=recommended_class,
-        action_recommendation=action_recommendation,
-        confidence=confidence,
-        reason_codes=reason_codes,
-        warning_until=warning_until,
-        call_quality_rate=input_data.call_quality_rate,
-        lead_transfer_rate=input_data.lead_transfer_rate,
-        total_revenue=input_data.rev,
-        call_classification=call_classification,
-        lead_classification=lead_classification,
-        call_presence=call_presence,
-        lead_presence=lead_presence,
-        calls=input_data.calls,
-        leads=input_data.leads,
-        as_of_date=as_of_date
+        currentTier=input_data.currentClassification,
+        isUnmapped=input_data.isUnmapped or False,
+        recommendedTier=recommended_tier,
+        action=action_recommendation,
+        actionLabel=action_label,
+        reason=reason,
+        hasWarning=has_warning,
+        warningReason=f"Warning period until {warning_until}" if warning_until else None,
+        callClassification=call_classification,
+        leadClassification=lead_classification,
+        hasInsufficientVolume=has_insufficient_volume,
+        insufficientVolumeReason="Insufficient volume for reliable classification" if has_insufficient_volume else None,
+        premiumMin=call_thresholds["premium"],
+        standardMin=call_thresholds["standard"],
+        isPaused=is_paused,
+        pauseReason=reason if is_paused else None,
+        recommendedClassification=recommended_class
     )
 
 
 def classify_batch(
     inputs: List[ClassificationInput],
-    thresholds: Optional[Dict[str, Dict[str, ThresholdConfig]]] = None,
+    thresholds: Optional[Dict[str, VerticalThresholds]] = None,
     as_of_date: Optional[date] = None
 ) -> List[ClassificationResult]:
     """
