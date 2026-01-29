@@ -1,21 +1,47 @@
 'use client';
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { useTheme } from './theme-context';
 import { ArrowLeftOutlined, ThunderboltOutlined, PhoneOutlined, UserOutlined, InfoCircleOutlined } from '@ant-design/icons';
 
+/**
+ * Column mapping for CSV fields to application fields
+ */
 interface ColumnMapping {
   [key: string]: string;
 }
 
+/**
+ * Feed type for A/B/C feed validation per Section 0.4.1 and 0.8.3
+ * - feed_a: fact_subid_day grain (date_et + vertical + traffic_type + tier + subid)
+ * - feed_b: fact_subid_slice_day grain (+ tx_family + slice_name + slice_value)
+ * - feed_c: fact_subid_buyer_day grain (+ buyer_key_variant + buyer_key)
+ * - legacy: Original field definitions for backward compatibility
+ */
+type FeedType = 'feed_a' | 'feed_b' | 'feed_c' | 'legacy';
+
+/**
+ * Props for the MappingStep component
+ */
 interface MappingStepProps {
+  /** Available column names from uploaded CSV */
   columns: string[];
+  /** Current column mapping state */
   columnMapping: ColumnMapping;
+  /** Feed type determines which field definitions to use for validation */
+  feedType: FeedType;
+  /** Callback when mapping changes */
   onMappingChange: (mapping: ColumnMapping) => void;
+  /** Callback to go back to previous step */
   onBack: () => void;
+  /** Callback to proceed with analysis */
   onAnalyze: () => void;
 }
 
+/**
+ * Legacy field definitions - preserved for backward compatibility
+ * Used when feedType = 'legacy'
+ */
 const FIELD_DEFINITIONS = [
   // Core fields
   { key: 'subid', label: 'Sub ID', required: true, group: 'core' },
@@ -54,31 +80,187 @@ const FIELD_DEFINITIONS = [
   { key: 'total_revenue', label: 'Total Revenue', required: false, group: 'meta' }
 ];
 
+/**
+ * Feed A: fact_subid_day required fields per Section 0.8.3
+ * Grain: date_et + vertical + traffic_type + tier + subid
+ * All measures are required for proper rollup and classification
+ */
+const FEED_A_FIELDS = [
+  // Core dimension fields
+  { key: 'date_et', label: 'Date (ET)', required: true, group: 'core', description: 'Date in Eastern Time' },
+  { key: 'vertical', label: 'Vertical', required: true, group: 'core', description: 'Medicare, Health, Life, Auto, Home' },
+  { key: 'traffic_type', label: 'Traffic Type', required: true, group: 'core', description: 'Full O&O, Partial O&O, Non O&O' },
+  { key: 'tier', label: 'Tier', required: true, group: 'core', description: 'Premium/Standard classification' },
+  { key: 'subid', label: 'Sub ID', required: true, group: 'core', description: 'Unique source identifier' },
+  
+  // Call metrics - required for call_quality_rate, qr_rate
+  { key: 'calls', label: 'Calls', required: true, group: 'call', description: 'Total call volume' },
+  { key: 'paid_calls', label: 'Paid Calls', required: true, group: 'call', description: 'Calls that converted to paid' },
+  { key: 'qual_paid_calls', label: 'Qualified Paid Calls', required: true, group: 'call', description: 'For call_quality_rate calculation' },
+  
+  // Lead metrics - required for lead_transfer_rate
+  { key: 'transfer_count', label: 'Transfer Count', required: true, group: 'lead', description: 'Successful lead transfers' },
+  { key: 'leads', label: 'Leads', required: true, group: 'lead', description: 'Total lead volume' },
+  
+  // Click metrics
+  { key: 'clicks', label: 'Clicks', required: true, group: 'click', description: 'Total click volume' },
+  
+  // Redirect metrics
+  { key: 'redirects', label: 'Redirects', required: true, group: 'redirect', description: 'Total redirect volume' },
+  
+  // Revenue measures - all required for metric presence gating
+  { key: 'call_rev', label: 'Call Revenue', required: true, group: 'revenue', description: 'Revenue from calls' },
+  { key: 'lead_rev', label: 'Lead Revenue', required: true, group: 'revenue', description: 'Revenue from leads' },
+  { key: 'click_rev', label: 'Click Revenue', required: true, group: 'revenue', description: 'Revenue from clicks' },
+  { key: 'redirect_rev', label: 'Redirect Revenue', required: true, group: 'revenue', description: 'Revenue from redirects' },
+  { key: 'rev', label: 'Total Revenue', required: true, group: 'revenue', description: 'Sum of all revenue streams' },
+];
+
+/**
+ * Feed B: fact_subid_slice_day required fields per Section 0.8.3
+ * Grain: date_et + vertical + traffic_type + tier + subid + tx_family + slice_name + slice_value
+ * Extends Feed A with slice dimensions for driver analysis
+ */
+const FEED_B_FIELDS = [
+  // Include all Feed A core dimension fields
+  { key: 'date_et', label: 'Date (ET)', required: true, group: 'core', description: 'Date in Eastern Time' },
+  { key: 'vertical', label: 'Vertical', required: true, group: 'core', description: 'Medicare, Health, Life, Auto, Home' },
+  { key: 'traffic_type', label: 'Traffic Type', required: true, group: 'core', description: 'Full O&O, Partial O&O, Non O&O' },
+  { key: 'tier', label: 'Tier', required: true, group: 'core', description: 'Premium/Standard classification' },
+  { key: 'subid', label: 'Sub ID', required: true, group: 'core', description: 'Unique source identifier' },
+  
+  // Feed A call metrics
+  { key: 'calls', label: 'Calls', required: true, group: 'call', description: 'Total call volume' },
+  { key: 'paid_calls', label: 'Paid Calls', required: true, group: 'call', description: 'Calls that converted to paid' },
+  { key: 'qual_paid_calls', label: 'Qualified Paid Calls', required: true, group: 'call', description: 'For call_quality_rate calculation' },
+  
+  // Feed A lead metrics
+  { key: 'transfer_count', label: 'Transfer Count', required: true, group: 'lead', description: 'Successful lead transfers' },
+  { key: 'leads', label: 'Leads', required: true, group: 'lead', description: 'Total lead volume' },
+  
+  // Feed A click metrics
+  { key: 'clicks', label: 'Clicks', required: true, group: 'click', description: 'Total click volume' },
+  
+  // Feed A redirect metrics
+  { key: 'redirects', label: 'Redirects', required: true, group: 'redirect', description: 'Total redirect volume' },
+  
+  // Feed A revenue measures
+  { key: 'call_rev', label: 'Call Revenue', required: true, group: 'revenue', description: 'Revenue from calls' },
+  { key: 'lead_rev', label: 'Lead Revenue', required: true, group: 'revenue', description: 'Revenue from leads' },
+  { key: 'click_rev', label: 'Click Revenue', required: true, group: 'revenue', description: 'Revenue from clicks' },
+  { key: 'redirect_rev', label: 'Redirect Revenue', required: true, group: 'revenue', description: 'Revenue from redirects' },
+  { key: 'rev', label: 'Total Revenue', required: true, group: 'revenue', description: 'Sum of all revenue streams' },
+  
+  // Feed B slice-specific fields for driver analysis
+  { key: 'tx_family', label: 'TX Family', required: true, group: 'slice', description: 'Transaction type: call | lead | click | redirect' },
+  { key: 'slice_name', label: 'Slice Name', required: true, group: 'slice', description: 'Dimension name (e.g., ad_source, keyword)' },
+  { key: 'slice_value', label: 'Slice Value', required: true, group: 'slice', description: 'Dimension value (top 50 per grain by rev)' },
+  { key: 'fill_rate_by_rev', label: 'Fill Rate by Rev', required: true, group: 'slice', description: 'Revenue coverage ratio for Smart Unspecified logic' },
+];
+
+/**
+ * Feed C: fact_subid_buyer_day required fields per Section 0.8.3
+ * Grain: date_et + vertical + traffic_type + tier + subid + buyer_key_variant + buyer_key
+ * Used for buyer sensitivity analysis and Path to Life salvage simulations
+ */
+const FEED_C_FIELDS = [
+  // Core dimension fields
+  { key: 'date_et', label: 'Date (ET)', required: true, group: 'core', description: 'Date in Eastern Time' },
+  { key: 'vertical', label: 'Vertical', required: true, group: 'core', description: 'Medicare, Health, Life, Auto, Home' },
+  { key: 'traffic_type', label: 'Traffic Type', required: true, group: 'core', description: 'Full O&O, Partial O&O, Non O&O' },
+  { key: 'tier', label: 'Tier', required: true, group: 'core', description: 'Premium/Standard classification' },
+  { key: 'subid', label: 'Sub ID', required: true, group: 'core', description: 'Unique source identifier' },
+  
+  // Buyer-specific dimension fields for Path to Life analysis
+  { key: 'buyer_key_variant', label: 'Buyer Key Variant', required: true, group: 'buyer', description: 'Variant type: carrier_name or concatenated' },
+  { key: 'buyer_key', label: 'Buyer Key', required: true, group: 'buyer', description: 'Buyer identifier for sensitivity analysis' },
+  
+  // Call metrics for buyer-level quality
+  { key: 'calls', label: 'Calls', required: true, group: 'call', description: 'Calls to this buyer' },
+  { key: 'paid_calls', label: 'Paid Calls', required: true, group: 'call', description: 'Paid calls to this buyer' },
+  { key: 'qual_paid_calls', label: 'Qualified Paid Calls', required: true, group: 'call', description: 'Qualified calls for buyer quality rate' },
+  
+  // Lead metrics for buyer-level transfers
+  { key: 'transfer_count', label: 'Transfer Count', required: true, group: 'lead', description: 'Transfers to this buyer' },
+  
+  // Revenue from this buyer
+  { key: 'call_rev', label: 'Call Revenue', required: true, group: 'revenue', description: 'Call revenue from this buyer' },
+];
+
+/**
+ * Group configuration for field groupings in the mapping UI
+ * Defines display title, icon, and color theme per group
+ * Extended with slice, buyer, and revenue groups for A/B/C feeds
+ */
 const GROUP_CONFIG: Record<string, { title: string; icon: React.ReactNode; colorKey: string }> = {
   core: { title: 'Core Fields', icon: <InfoCircleOutlined />, colorKey: 'purple' },
   call: { title: 'Call Metrics', icon: <PhoneOutlined />, colorKey: 'green' },
   lead: { title: 'Lead Metrics', icon: <UserOutlined />, colorKey: 'orange' },
   click: { title: 'Click Metrics', icon: <InfoCircleOutlined />, colorKey: 'blue' },
   redirect: { title: 'Redirect Metrics', icon: <InfoCircleOutlined />, colorKey: 'cyan' },
+  revenue: { title: 'Revenue Measures', icon: <InfoCircleOutlined />, colorKey: 'gold' },
+  slice: { title: 'Slice Data', icon: <InfoCircleOutlined />, colorKey: 'teal' },
+  buyer: { title: 'Buyer Data', icon: <UserOutlined />, colorKey: 'magenta' },
   meta: { title: 'Metadata', icon: <InfoCircleOutlined />, colorKey: 'grey' }
 };
 
 export default function MappingStep({
   columns,
   columnMapping,
+  feedType,
   onMappingChange,
   onBack,
   onAnalyze
 }: MappingStepProps) {
   const { theme, isDark } = useTheme();
   
-  const requiredFields = FIELD_DEFINITIONS.filter(f => f.required).map(f => f.key);
+  /**
+   * Select field definitions based on feed type
+   * Memoized to prevent unnecessary recalculations on re-renders
+   * Per Section 0.8.3 data integrity rules
+   */
+  const fieldDefinitions = useMemo(() => {
+    switch (feedType) {
+      case 'feed_a':
+        return FEED_A_FIELDS;
+      case 'feed_b':
+        return FEED_B_FIELDS;
+      case 'feed_c':
+        return FEED_C_FIELDS;
+      case 'legacy':
+      default:
+        return FIELD_DEFINITIONS;
+    }
+  }, [feedType]);
+  
+  /**
+   * Compute required fields from active field definitions
+   * Used for validation gate on Analyze button
+   */
+  const requiredFields = useMemo(() => 
+    fieldDefinitions.filter(f => f.required).map(f => f.key),
+    [fieldDefinitions]
+  );
+  
+  /**
+   * Check if all required fields are mapped
+   * Enables/disables the Analyze button
+   */
   const allRequiredMapped = requiredFields.every(field => columnMapping?.[field]);
+  
+  /**
+   * Count of unmapped required fields for validation display
+   */
+  const unmappedRequiredCount = requiredFields.filter(f => !columnMapping?.[f]).length;
 
   const handleFieldChange = (fieldKey: string, value: string) => {
     onMappingChange({ ...columnMapping, [fieldKey]: value });
   };
 
+  /**
+   * Get themed color for field group display
+   * Extended with gold, teal, and magenta for A/B/C feed groups
+   */
   const getGroupColor = (colorKey: string) => {
     const colors: Record<string, { light: string; dark: string }> = {
       purple: { dark: '#BEA0FE', light: '#764BA2' },
@@ -86,6 +268,9 @@ export default function MappingStep({
       orange: { dark: '#FF7863', light: '#E55A45' },
       blue: { dark: '#64B5F6', light: '#1976D2' },
       cyan: { dark: '#4DD0E1', light: '#00ACC1' },
+      gold: { dark: '#FFD700', light: '#B8860B' },
+      teal: { dark: '#20B2AA', light: '#008080' },
+      magenta: { dark: '#FF69B4', light: '#C71585' },
       grey: { dark: '#AAAAAF', light: '#666666' }
     };
     return colors[colorKey]?.[isDark ? 'dark' : 'light'] || theme.colors.text.primary;
@@ -113,7 +298,17 @@ export default function MappingStep({
     outline: 'none',
   };
 
-  const groups = ['core', 'call', 'lead', 'click', 'redirect', 'meta'];
+  /**
+   * Compute visible groups based on active field definitions
+   * Groups are ordered consistently and filtered to only show groups with fields
+   * Memoized to prevent recalculation on re-renders
+   */
+  const groups = useMemo(() => {
+    const allGroups = [...new Set(fieldDefinitions.map(f => f.group))];
+    // Maintain consistent group ordering regardless of feed type
+    const groupOrder = ['core', 'call', 'lead', 'click', 'redirect', 'revenue', 'slice', 'buyer', 'meta'];
+    return groupOrder.filter(g => allGroups.includes(g));
+  }, [fieldDefinitions]);
 
   return (
     <div style={cardStyle}>
@@ -121,12 +316,13 @@ export default function MappingStep({
         Column Mapping
       </h3>
 
+      {/* Instruction panel */}
       <div style={{
         background: isDark ? 'rgba(190, 160, 254, 0.1)' : 'rgba(118, 75, 162, 0.08)',
         border: `1px solid ${isDark ? '#BEA0FE' : '#764BA2'}33`,
         borderRadius: '8px',
         padding: '12px 16px',
-        marginBottom: '20px',
+        marginBottom: '16px',
         fontSize: '13px'
       }}>
         <p style={{ color: theme.colors.text.primary, margin: '0 0 8px', fontWeight: 500 }}>
@@ -139,8 +335,39 @@ export default function MappingStep({
         </p>
       </div>
 
+      {/* Feed-specific validation status display */}
+      <div style={{
+        background: allRequiredMapped 
+          ? (isDark ? 'rgba(215, 255, 50, 0.1)' : 'rgba(76, 175, 80, 0.08)')
+          : (isDark ? 'rgba(255, 120, 99, 0.1)' : 'rgba(255, 120, 99, 0.08)'),
+        border: `1px solid ${allRequiredMapped ? (isDark ? '#D7FF32' : '#4CAF50') : (isDark ? '#FF7863' : '#E55A45')}33`,
+        borderRadius: '8px',
+        padding: '12px 16px',
+        marginBottom: '20px',
+        fontSize: '13px'
+      }}>
+        <p style={{ 
+          color: allRequiredMapped ? (isDark ? '#D7FF32' : '#4CAF50') : (isDark ? '#FF7863' : '#E55A45'), 
+          margin: 0, 
+          fontWeight: 500 
+        }}>
+          {allRequiredMapped 
+            ? `✓ All ${requiredFields.length} required fields mapped`
+            : `⚠ ${unmappedRequiredCount} of ${requiredFields.length} required fields unmapped`}
+        </p>
+        {feedType !== 'legacy' && (
+          <p style={{ color: theme.colors.text.secondary, margin: '4px 0 0', fontSize: '11px' }}>
+            Feed: {feedType.toUpperCase()} | Grain: {
+              feedType === 'feed_a' ? 'date_et + vertical + traffic_type + tier + subid' :
+              feedType === 'feed_b' ? '+ tx_family + slice_name + slice_value' :
+              '+ buyer_key_variant + buyer_key'
+            }
+          </p>
+        )}
+      </div>
+
       {groups.map(group => {
-        const groupFields = FIELD_DEFINITIONS.filter(f => f.group === group);
+        const groupFields = fieldDefinitions.filter(f => f.group === group);
         const groupConfig = GROUP_CONFIG[group];
         const color = getGroupColor(groupConfig.colorKey);
         
