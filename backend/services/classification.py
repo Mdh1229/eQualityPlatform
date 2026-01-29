@@ -52,26 +52,41 @@ from backend.models.schemas import (
 InternalThreshold = Dict[str, float]  # {"premium": float, "standard": float}
 VerticalThresholds = Dict[str, InternalThreshold]  # {"call_quality": {...}, "lead_transfer": {...}}
 
+# DEFAULT_THRESHOLDS: 2026 Thresholds from Quality_Thresholds_2026.xlsx
+# Source: lib/quality-targets.ts QUALITY_TARGETS
+# Using Full O&O thresholds as the default for each vertical.
+# Values are decimals (e.g., 0.09 = 9%)
+# Includes pauseMax (at or below this = PAUSE territory)
 DEFAULT_THRESHOLDS: Dict[str, VerticalThresholds] = {
     Vertical.MEDICARE.value: {
-        "call_quality": {"premium": 0.75, "standard": 0.65},
-        "lead_transfer": {"premium": 0.70, "standard": 0.60},
+        # Medicare Full O&O: call premium=0.09, standard=0.06, pauseMax=0.05
+        #                    lead premium=0.015, standard=0.008, pauseMax=0.007
+        "call_quality": {"premium": 0.09, "standard": 0.06, "pauseMax": 0.05},
+        "lead_transfer": {"premium": 0.015, "standard": 0.008, "pauseMax": 0.007},
     },
     Vertical.HEALTH.value: {
-        "call_quality": {"premium": 0.70, "standard": 0.60},
-        "lead_transfer": {"premium": 0.65, "standard": 0.55},
+        # Health Full O&O: call premium=0.14, standard=0.07, pauseMax=0.06
+        #                  lead premium=0.09, standard=0.05, pauseMax=0.04
+        "call_quality": {"premium": 0.14, "standard": 0.07, "pauseMax": 0.06},
+        "lead_transfer": {"premium": 0.09, "standard": 0.05, "pauseMax": 0.04},
     },
     Vertical.LIFE.value: {
-        "call_quality": {"premium": 0.70, "standard": 0.60},
-        "lead_transfer": {"premium": 0.65, "standard": 0.55},
+        # Life Full O&O: call premium=0.10, standard=0.06, pauseMax=0.05
+        #                lead premium=0.015, standard=0.0075, pauseMax=0.007
+        "call_quality": {"premium": 0.10, "standard": 0.06, "pauseMax": 0.05},
+        "lead_transfer": {"premium": 0.015, "standard": 0.0075, "pauseMax": 0.007},
     },
     Vertical.AUTO.value: {
-        "call_quality": {"premium": 0.65, "standard": 0.55},
-        "lead_transfer": {"premium": 0.60, "standard": 0.50},
+        # Auto Full O&O: call premium=0.25, standard=0.20, pauseMax=0.19
+        #                lead premium=0.025, standard=0.015, pauseMax=0.014
+        "call_quality": {"premium": 0.25, "standard": 0.20, "pauseMax": 0.19},
+        "lead_transfer": {"premium": 0.025, "standard": 0.015, "pauseMax": 0.014},
     },
     Vertical.HOME.value: {
-        "call_quality": {"premium": 0.65, "standard": 0.55},
-        "lead_transfer": {"premium": 0.60, "standard": 0.50},
+        # Home Full O&O: call premium=0.25, standard=0.20, pauseMax=0.19
+        #                lead premium=0.025, standard=0.015, pauseMax=0.014
+        "call_quality": {"premium": 0.25, "standard": 0.20, "pauseMax": 0.19},
+        "lead_transfer": {"premium": 0.025, "standard": 0.015, "pauseMax": 0.014},
     },
 }
 
@@ -302,6 +317,10 @@ def determine_action_recommendation(
     
     # Handle each recommended class
     if recommended_class == "Pause":
+        # CRITICAL 2026 Rule: Premium sources are NEVER paused immediately
+        # They get DEMOTE_WITH_WARNING to Standard first
+        if current_tier_lower == "premium":
+            return ActionType.DEMOTE_WITH_WARNING
         return ActionType.PAUSE_IMMEDIATE
     
     elif recommended_class == "Warn":
@@ -603,8 +622,11 @@ def classify_record(
     traffic_type = input_data.trafficType if isinstance(input_data.trafficType, TrafficType) else TrafficType(input_data.trafficType)
     premium_allowed = check_premium_eligibility(traffic_type, vertical)
     
-    # Get current tier if available
-    current_tier = getattr(input_data, 'current_tier', None) or getattr(input_data, 'tier', None)
+    # Get current tier if available - check currentClassification and internalChannel per schema
+    current_tier = (
+        getattr(input_data, 'currentClassification', None) or 
+        getattr(input_data, 'internalChannel', None)
+    )
     
     # Determine combined recommended class
     recommended_class = determine_recommended_class(
@@ -664,7 +686,7 @@ def classify_record(
         tier=call_tier,
         premiumMin=call_thresholds["premium"],
         standardMin=call_thresholds["standard"],
-        pauseMax=call_thresholds["standard"] - 0.01,  # Pause is below standard
+        pauseMax=call_thresholds.get("pauseMax", max(call_thresholds["standard"] - 0.01, 0.001)),
         target=call_thresholds["premium"]
     )
     
@@ -677,7 +699,7 @@ def classify_record(
         tier=lead_tier,
         premiumMin=lead_thresholds["premium"],
         standardMin=lead_thresholds["standard"],
-        pauseMax=lead_thresholds["standard"] - 0.01,  # Pause is below standard
+        pauseMax=lead_thresholds.get("pauseMax", max(lead_thresholds["standard"] - 0.001, 0.001)),
         target=lead_thresholds["premium"]
     )
     

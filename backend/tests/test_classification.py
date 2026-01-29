@@ -1457,6 +1457,12 @@ class TestClassificationParity:
     def test_parity_pause_metrics_standard_current(self):
         """
         Parity test: Standard source with Pause metrics gets paused.
+        
+        Medicare Full O&O thresholds (from quality-targets.ts):
+        - Call: premium=0.09, standard=0.06, pauseMax=0.05
+        - Lead: premium=0.015, standard=0.008, pauseMax=0.007
+        
+        Use values BELOW pauseMax to trigger Pause classification.
         """
         input_data = ClassificationInput(
             subId="PARITY-002",
@@ -1467,10 +1473,10 @@ class TestClassificationParity:
             isUnmapped=False,
             totalCalls=200,
             callsOverThreshold=10,
-            callQualityRate=0.40,  # Well below any threshold
+            callQualityRate=0.03,  # Below pauseMax of 0.05 (3% < 5%)
             totalLeadsDialed=200,
             leadsTransferred=8,
-            leadTransferRate=0.30,  # Well below any threshold
+            leadTransferRate=0.005,  # Below pauseMax of 0.007 (0.5% < 0.7%)
             totalRevenue=50000.0,
         )
         
@@ -1488,6 +1494,12 @@ class TestClassificationParity:
         Parity test: Premium source with Pause metrics gets warning (not immediate pause).
         
         CRITICAL: Per 2026 Rules, Premium sources are NEVER paused immediately.
+        
+        Medicare Full O&O thresholds (from quality-targets.ts):
+        - Call: premium=0.09, standard=0.06, pauseMax=0.05
+        - Lead: premium=0.015, standard=0.008, pauseMax=0.007
+        
+        Use values BELOW pauseMax to trigger Pause classification.
         """
         input_data = ClassificationInput(
             subId="PARITY-003",
@@ -1498,10 +1510,10 @@ class TestClassificationParity:
             isUnmapped=False,
             totalCalls=200,
             callsOverThreshold=10,
-            callQualityRate=0.40,  # Well below any threshold
+            callQualityRate=0.03,  # Below pauseMax of 0.05 (3% < 5%)
             totalLeadsDialed=200,
             leadsTransferred=8,
-            leadTransferRate=0.30,  # Well below any threshold
+            leadTransferRate=0.005,  # Below pauseMax of 0.007 (0.5% < 0.7%)
             totalRevenue=50000.0,
         )
         
