@@ -1,0 +1,101 @@
+Category,Field Name,Required,Aliases,Type,Definition
+Upload - Core,subid,Yes,"sub_id",String,Unique traffic source / publisher identifier
+Upload - Core,vertical,Yes,"vertical_name",String,"Insurance market category: Medicare, Health, Life, Auto, Home"
+Upload - Core,traffic_type,Yes,"traffictype",String,"Ownership classification: Full O&O, Partial O&O, Non O&O"
+Upload - Core,internal_channel,No,"internalchannel",String,"Current tier: Premium or Standard"
+Upload - Core,current_classification,No,"classification",String,Existing classification label if any
+Upload - Core,is_unmapped,No,"isunmapped, unmapped",Boolean,Whether the source is unmapped
+Upload - Call Metrics,total_calls,No,"call_volume",Integer,Total number of calls received
+Upload - Call Metrics,paid_calls,No,"paidcalls",Integer,Number of paid calls (used for RPQCall calculation)
+Upload - Call Metrics,calls_over_threshold,No,,Integer,Calls meeting the vertical's duration threshold
+Upload - Call Metrics,call_quality_rate,No,,Float,Pre-calculated call quality percentage (calls_over_threshold / total_calls)
+Upload - Call Metrics,call_revenue,No,"callrevenue",Float,Revenue generated from calls
+Upload - Lead Metrics,total_leads_dialed,No,"leads_dialed, lead_volume",Integer,Total number of leads dialed
+Upload - Lead Metrics,leads_transferred,No,"transfers",Integer,Number of leads successfully transferred
+Upload - Lead Metrics,lead_transfer_rate,No,"ob_transfer_rate, transfer_rate",Float,OB transfer rate percentage (leads_transferred / total_leads_dialed)
+Upload - Lead Metrics,lead_revenue,No,"leadrevenue",Float,Revenue generated from leads
+Upload - Click Metrics,click_volume,No,"clicks, total_clicks",Integer,Number of clicks
+Upload - Click Metrics,click_revenue,No,"clickrevenue",Float,Revenue from clicks
+Upload - Redirect Metrics,redirect_volume,No,"redirects, total_redirects",Integer,Number of redirects
+Upload - Redirect Metrics,redirect_revenue,No,"redirectrevenue",Float,Revenue from redirects
+Upload - Revenue,total_revenue,No,"revenue",Float,Total revenue across all sources for this record
+Upload - Metadata,channel,No,,String,Marketing channel
+Upload - Metadata,placement,No,,String,Ad placement identifier
+Upload - Metadata,description,No,,String,Campaign description text
+Upload - Metadata,source_name,No,"sourcename, ad_source",String,"Advertising source (Google, Facebook, MediaAlpha, etc.)"
+Upload - Metadata,media_type,No,"mediatype, media_type_name",String,"Media type (Search, Social, Display, etc.)"
+Upload - Metadata,campaign_type,No,"campaigntype",String,Campaign category
+Calculated,callQualityRate,N/A,,Float,calls_over_threshold / total_calls — percentage of calls meeting duration threshold
+Calculated,leadTransferRate,N/A,,Float,leads_transferred / total_leads_dialed — percentage of leads successfully transferred
+Calculated,rpQCall,N/A,,Float,call_revenue / paid_calls — revenue per quality call
+Calculated,rpLead,N/A,,Float,lead_revenue / total_leads_dialed — revenue per lead
+Calculated,rpClick,N/A,,Float,click_revenue / click_volume — revenue per click
+Calculated,rpRedirect,N/A,,Float,redirect_revenue / redirect_volume — revenue per redirect
+Calculated,recommendedTier,N/A,,String,"Classification engine output: Premium, Standard, or PAUSE"
+Calculated,action,N/A,,String,"Action code (e.g. keep_premium, demote_to_standard, pause_immediate)"
+Calculated,actionLabel,N/A,,String,"Human-readable action label (e.g. Demote to Standard)"
+Calculated,classificationReason,N/A,,String,Text explanation of why the action was recommended
+Calculated - ML,performanceIndex,N/A,,Float,Composite 0-100 score combining quality / volume / revenue
+Calculated - ML,riskScore,N/A,,Float,0-100 risk assessment score
+Calculated - ML,riskLevel,N/A,,String,"Derived from riskScore: low, medium, high, or critical"
+Calculated - ML,qualityMomentum,N/A,,String,"accelerating, stable, decelerating, or unknown"
+Calculated - ML,volumeMomentum,N/A,,String,"growing, stable, declining, or unknown"
+Calculated - ML,revenueEfficiency,N/A,,Float,Revenue generated per quality point
+Calculated - ML,callQualityPercentile,N/A,,Float,Percentile rank vs. peers in same vertical/traffic type (call quality)
+Calculated - ML,leadQualityPercentile,N/A,,Float,Percentile rank vs. peers (lead quality)
+Calculated - ML,revenuePercentile,N/A,,Float,Percentile rank vs. peers (revenue)
+Calculated - ML,overallPercentile,N/A,,Float,Combined percentile rank across all metrics
+Thresholds,premiumMin,N/A,,Float,Minimum quality rate to qualify for Premium tier (per vertical/traffic type/metric)
+Thresholds,standardMin,N/A,,Float,Minimum quality rate to qualify for Standard tier
+Thresholds,pauseMax,N/A,,Float,Below this threshold triggers a Pause recommendation
+Thresholds,target,N/A,,Float,Target performance goal
+Thresholds - Duration,Medicare call duration,N/A,,Integer,45 minutes (2700s) — call must last this long to count as quality
+Thresholds - Duration,Health call duration,N/A,,Integer,20 minutes (1200s)
+Thresholds - Duration,Life call duration,N/A,,Integer,35 minutes (2100s)
+Thresholds - Duration,Auto call duration,N/A,,Integer,20 minutes (1200s)
+Thresholds - Duration,Home call duration,N/A,,Integer,20 minutes (1200s)
+Thresholds - Volume,Call volume minimum,N/A,,Integer,50 — must have >= 50 total calls before classification acts
+Thresholds - Volume,Lead volume minimum,N/A,,Integer,100 — must have >= 100 total leads before classification acts
+Classification Action,keep_premium,N/A,,String,Keep at Premium — both call and lead metrics meet Premium thresholds
+Classification Action,keep_premium_watch,N/A,,String,Keep Premium (Watch) — Premium but one metric is slipping toward Standard
+Classification Action,upgrade_to_premium,N/A,,String,Upgrade to Premium — Standard source with both metrics at Premium level (30+ days)
+Classification Action,keep_standard,N/A,,String,Keep at Standard — both metrics within Standard range
+Classification Action,keep_standard_close,N/A,,String,Keep Standard (Close) — Standard but one metric is near Premium threshold
+Classification Action,demote_to_standard,N/A,,String,Demote to Standard — Premium source where both metrics dropped to Standard range
+Classification Action,demote_with_warning,N/A,,String,Demote + 14-Day Warning — Premium source with any metric in Pause range
+Classification Action,warning_14_day,N/A,,String,14-Day Warning — Standard source with one metric in Pause range
+Classification Action,pause_immediate,N/A,,String,Pause Immediately — Standard source with both metrics in Pause range
+Classification Action,insufficient_volume,N/A,,String,Insufficient Volume — not enough calls/leads to make a decision
+Classification Action,no_premium_available,N/A,,String,No Premium Available — this traffic type does not offer a Premium tier
+Classification Action,review,N/A,,String,Needs Manual Review — edge case requiring human judgment
+Aggregation Dimension,sub_id,N/A,,String,Per individual Sub ID — most granular analysis level
+Aggregation Dimension,source_name,N/A,,String,"Aggregated by advertising source + vertical + traffic type + channel"
+Aggregation Dimension,placement,N/A,,String,Aggregated by ad placement + vertical + traffic type + channel
+Aggregation Dimension,media_type,N/A,,String,"Aggregated by media type (SEM, Social, Display) + vertical + traffic type + channel"
+Aggregation Dimension,overall,N/A,,String,Highest-level aggregate: vertical + traffic type + channel
+Action History,subId,N/A,,String,The traffic source acted upon
+Action History,vertical,N/A,,String,Vertical of the source
+Action History,trafficType,N/A,,String,Traffic type of the source
+Action History,mediaType,N/A,,String,Media type (optional)
+Action History,actionTaken,N/A,,String,"Action code: promote, demote, pause, maintain, review, etc."
+Action History,actionLabel,N/A,,String,Human-readable action label
+Action History,previousState,N/A,,String,State before the action
+Action History,newState,N/A,,String,State after the action
+Action History,metricMode,N/A,,String,"Which metric drove the action: call, lead, or both"
+Action History,callQuality,N/A,,Float,Call quality rate at time of action
+Action History,leadQuality,N/A,,Float,Lead quality rate at time of action
+Action History,totalRevenue,N/A,,Float,Revenue at time of action
+Action History,notes,N/A,,String,Free-text notes from the user
+Action History,takenBy,N/A,,String,Who performed the action
+Action History,createdAt,N/A,,DateTime,Timestamp of the action
+Portfolio ML Insights,overallHealthScore,N/A,,Float,0-100 composite health score for the entire portfolio
+Portfolio ML Insights,revenueAtRisk,N/A,,Float,Dollar amount of revenue from sources recommended for demotion/pause
+Portfolio ML Insights,revenueAtRiskPercent,N/A,,Float,Percentage of total revenue at risk
+Portfolio ML Insights,diversificationScore,N/A,,Float,How concentrated revenue is across sources (lower = more concentrated)
+Portfolio ML Insights,concentrationRisk,N/A,,String,Revenue share of top 5 and top 10 sources
+Portfolio ML Insights,trendIndicator,N/A,,String,"improving, stable, or declining"
+Smart Alerts,severity,N/A,,String,"critical, warning, info, opportunity"
+Smart Alerts,category,N/A,,String,"quality, volume, revenue, risk, opportunity"
+Smart Alerts,suggestedAction,N/A,,String,Recommended next step
+Smart Alerts,potentialImpact,N/A,,String,Dollar or percentage impact if action is/isn't taken
+Smart Alerts,urgency,N/A,,String,"immediate, today, this_week, this_month"
