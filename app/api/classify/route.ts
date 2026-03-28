@@ -6,6 +6,9 @@ import { AggregationDimension } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
+// FastAPI backend URL for proxy requests - falls back to localhost for development
+const FASTAPI_URL = process.env.FASTAPI_URL || 'http://localhost:8000';
+
 interface CsvRow {
   [key: string]: string | undefined;
 }
@@ -67,6 +70,122 @@ interface ParsedRow {
   redirectVolume: number;
   redirectRevenue: number;
   totalRevenue: number;
+}
+
+/**
+ * FastAPI Proxy Response Types
+ * These interfaces define the expected responses from the FastAPI backend
+ * to enable classification via the Python service layer
+ */
+
+// Response from POST /runs - creates a new analysis run
+interface FastAPIRunResponse {
+  run_id: string;
+  name?: string;
+  status?: string;
+}
+
+// Response from POST /runs/{run_id}/compute - triggers classification computation
+interface FastAPIComputeResponse {
+  status: string;
+  results_count: number;
+  message?: string;
+}
+
+// Individual classification result from FastAPI
+interface FastAPIClassificationResult {
+  subId: string;
+  vertical: string;
+  trafficType: string;
+  internalChannel: string | null;
+  currentClassification: string;
+  isUnmapped: boolean;
+  recommendedClassification: string;
+  action: string;
+  actionLabel: string;
+  channel: string;
+  placement: string;
+  description: string;
+  sourceName: string;
+  mediaType: string;
+  campaignType: string;
+  totalCalls: number;
+  paidCalls: number;
+  callsOverThreshold: number;
+  callQualityRate: number | null;
+  callRevenue: number;
+  leadVolume: number;
+  leadsTransferred: number;
+  leadTransferRate: number | null;
+  leadRevenue: number;
+  clickVolume: number;
+  clickRevenue: number;
+  redirectVolume: number;
+  redirectRevenue: number;
+  totalRevenue: number;
+  rpLead: number | null;
+  rpQCall: number | null;
+  rpClick: number | null;
+  rpRedirect: number | null;
+  classificationReason: string;
+  premiumMin: number | null;
+  standardMin: number | null;
+  isPaused: boolean;
+  pauseReason: string | null;
+  hasInsufficientVolume: boolean;
+  insufficientVolumeReason: string | null;
+  hasWarning: boolean;
+  warningReason: string | null;
+  callClassification: string | null;
+  leadClassification: string | null;
+  dimension: string;
+}
+
+// Response from GET /runs/{run_id} - fetches full run details with results
+interface FastAPIRunDetailResponse {
+  run: {
+    id: string;
+    name: string;
+    status: string;
+    start_date: string;
+    end_date: string;
+    file_name: string;
+    total_records: number;
+    created_at: string;
+    updated_at: string;
+  };
+  results: FastAPIClassificationResult[];
+  stats: {
+    promote: number;
+    demote: number;
+    below: number;
+    correct: number;
+    review: number;
+    pause: number;
+    insufficient_volume: number;
+  };
+}
+
+// Result type for the FastAPI proxy helper function
+interface FastAPIProxyResult {
+  success: boolean;
+  response?: {
+    runId: string;
+    results: FastAPIClassificationResult[];
+    stats: {
+      promote: number;
+      demote: number;
+      below: number;
+      correct: number;
+      review: number;
+      pause: number;
+      insufficient_volume: number;
+    };
+    totalRecords: number;
+    dimension: string;
+    originalRecordCount: number;
+  };
+  error?: string;
 }
 
 // Generate aggregation key based on dimension
@@ -221,6 +340,152 @@ function aggregateRows(rows: ParsedRow[], dimension: AggregationDimension): Pars
   return result;
 }
 
+/**
+ * Attempts to proxy classification request to FastAPI backend.
+ * Implements a 3-step flow:
+ * 1. POST to /runs to create a new analysis run
+ * 2. POST to /runs/{run_id}/compute to trigger classification computation
+ * 3. GET /runs/{run_id} to fetch full results
+ * 
+ * @param data - Raw CSV data rows
+ * @param columnMapping - Column mapping configuration
+ * @param startDate - Analysis start date
+ * @param endDate - Analysis end date
+ * @param fileName - Source file name for tracking
+ * @param dimension - Aggregation dimension (sub_id, source_name, etc.)
+ * @returns FastAPIProxyResult with success status and response or error
+ */
+async function tryFastAPIProxy(
+  data: CsvRow[],
+  columnMapping: ColumnMapping,
+  startDate: string | undefined,
+  endDate: string | undefined,
+  fileName: string | undefined,
+  dimension: AggregationDimension
+): Promise<FastAPIProxyResult> {
+  try {
+    // Step 1: Create a new analysis run in FastAPI
+    const createRunPayload = {
+      name: fileName || `Analysis ${new Date().toISOString()}`,
+      description: `Classification run for ${dimension} dimension`,
+      data: data,
+      column_mapping: columnMapping,
+      start_date: startDate || '',
+      end_date: endDate || '',
+      file_name: fileName || '',
+      dimension: dimension
+    };
+
+    const createRunResponse = await fetch(`${FASTAPI_URL}/runs`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(createRunPayload),
+      // Set a reasonable timeout for the request
+      signal: AbortSignal.timeout(30000) // 30 second timeout
+    });
+
+    if (!createRunResponse.ok) {
+      const errorText = await createRunResponse.text();
+      return {
+        success: false,
+        error: `FastAPI /runs creation failed: ${createRunResponse.status} - ${errorText}`
+      };
+    }
+
+    const createRunResult: FastAPIRunResponse = await createRunResponse.json();
+    const runId = createRunResult.run_id;
+
+    if (!runId) {
+      return {
+        success: false,
+        error: 'FastAPI /runs did not return a run_id'
+      };
+    }
+
+    // Step 2: Trigger classification computation for the run
+    const computeResponse = await fetch(`${FASTAPI_URL}/runs/${runId}/compute`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      signal: AbortSignal.timeout(60000) // 60 second timeout for computation
+    });
+
+    if (!computeResponse.ok) {
+      const errorText = await computeResponse.text();
+      return {
+        success: false,
+        error: `FastAPI /runs/${runId}/compute failed: ${computeResponse.status} - ${errorText}`
+      };
+    }
+
+    const computeResult: FastAPIComputeResponse = await computeResponse.json();
+    
+    // Verify compute was successful
+    if (computeResult.status !== 'completed' && computeResult.status !== 'success') {
+      return {
+        success: false,
+        error: `FastAPI compute returned non-success status: ${computeResult.status}`
+      };
+    }
+
+    // Step 3: Fetch the full run details with classification results
+    const detailResponse = await fetch(`${FASTAPI_URL}/runs/${runId}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      signal: AbortSignal.timeout(30000) // 30 second timeout
+    });
+
+    if (!detailResponse.ok) {
+      const errorText = await detailResponse.text();
+      return {
+        success: false,
+        error: `FastAPI /runs/${runId} detail fetch failed: ${detailResponse.status} - ${errorText}`
+      };
+    }
+
+    const detailResult: FastAPIRunDetailResponse = await detailResponse.json();
+
+    // Transform FastAPI response to match the existing frontend contract format
+    // This ensures zero breaking changes to the frontend API
+    return {
+      success: true,
+      response: {
+        runId: detailResult.run.id,
+        results: detailResult.results,
+        stats: detailResult.stats,
+        totalRecords: detailResult.results.length,
+        dimension: dimension,
+        originalRecordCount: data.length
+      }
+    };
+
+  } catch (error) {
+    // Handle network errors, timeouts, and other fetch failures
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    
+    // Check if this is a connection refused error (FastAPI not running)
+    if (errorMessage.includes('ECONNREFUSED') || 
+        errorMessage.includes('fetch failed') ||
+        errorMessage.includes('network') ||
+        errorMessage.includes('timeout')) {
+      return {
+        success: false,
+        error: `FastAPI backend unavailable: ${errorMessage}`
+      };
+    }
+    
+    return {
+      success: false,
+      error: `FastAPI proxy error: ${errorMessage}`
+    };
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request?.json();
@@ -236,6 +501,42 @@ export async function POST(request: NextRequest) {
     
     const mapping: ColumnMapping = columnMapping ?? {};
     const selectedDimension: AggregationDimension = dimension as AggregationDimension;
+    
+    // ========================================================================
+    // FastAPI Proxy: Try FastAPI backend first for classification
+    // This enables the new Python-based classification pipeline while
+    // maintaining backward compatibility with the existing frontend contract
+    // ========================================================================
+    try {
+      const fastApiResult = await tryFastAPIProxy(
+        data,
+        mapping,
+        startDate,
+        endDate,
+        fileName,
+        selectedDimension
+      );
+      
+      if (fastApiResult.success && fastApiResult.response) {
+        // FastAPI successfully processed the classification
+        // Return response in existing frontend contract format
+        console.log('Classification completed via FastAPI backend');
+        return NextResponse.json(fastApiResult.response);
+      }
+      
+      // FastAPI call failed - log warning and fall back to local processing
+      console.warn(`FastAPI unavailable, falling back to local classification: ${fastApiResult.error}`);
+    } catch (proxyError) {
+      // Catch any unexpected errors from the proxy attempt
+      const errorMsg = proxyError instanceof Error ? proxyError.message : 'Unknown proxy error';
+      console.warn(`FastAPI proxy error, falling back to local classification: ${errorMsg}`);
+    }
+    
+    // ========================================================================
+    // Local Classification Fallback
+    // Preserves existing Prisma-based classification logic for when
+    // FastAPI backend is unavailable
+    // ========================================================================
     
     // First pass: parse all rows
     const parsedRows: ParsedRow[] = [];

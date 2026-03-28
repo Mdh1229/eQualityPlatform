@@ -1,0 +1,14 @@
+# Quality Compass Backend - Development/Test Dependencies
+# =========================================================
+# IMPORTANT: These versions are version-locked per Section 0.1.2 of the specification.
+# Do NOT modify versions without explicit approval.
+#
+# Python Runtime: 3.11.8 (exact)
+
+# Testing Framework
+# -----------------
+# Pytest test framework for running unit and integration tests
+pytest==8.3.4
+
+# Async test support for FastAPI async endpoint testing
+pytest-asyncio==0.25.0

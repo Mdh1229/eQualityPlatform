@@ -13,7 +13,9 @@ import {
   UserOutlined,
   ReloadOutlined,
   FileTextOutlined,
-  CloseCircleOutlined
+  CloseCircleOutlined,
+  DownOutlined,
+  RightOutlined
 } from '@ant-design/icons';
 
 interface ActionRecord {
@@ -33,9 +35,28 @@ interface ActionRecord {
   notes: string | null;
   takenBy: string | null;
   createdAt: string;
+  // Outcome tracking fields for DiD analysis
+  outcome: 'improved' | 'degraded' | 'no_change' | null;
+  outcome_measured_at: string | null;
 }
 
-type SortField = 'createdAt' | 'totalRevenue';
+/**
+ * Difference-in-Differences analysis result for action outcome tracking.
+ * Compares 14-day pre/post periods with matched cohort baseline.
+ * See Section 0.7.1 for DiD algorithm with matched cohort comparison.
+ */
+interface DiDAnalysis {
+  pre_period_quality: number;
+  post_period_quality: number;
+  quality_delta: number;
+  pre_period_revenue: number;
+  post_period_revenue: number;
+  revenue_delta: number;
+  matched_cohort_delta: number;
+  net_effect: number;
+}
+
+type SortField = 'createdAt' | 'totalRevenue' | 'outcomeMeasuredAt';
 type SortDirection = 'asc' | 'desc';
 
 export default function HistoryPage() {
@@ -56,6 +77,10 @@ export default function HistoryPage() {
   // Sorting
   const [sortField, setSortField] = useState<SortField>('createdAt');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
+
+  // Expanded row state for outcome detail display
+  const [expandedRowId, setExpandedRowId] = useState<string | null>(null);
+  const [detailData, setDetailData] = useState<Record<string, DiDAnalysis | null>>({});
 
   // Unique filter options derived from data
   const filterOptions = useMemo(() => {
@@ -143,6 +168,10 @@ export default function HistoryPage() {
       if (sortField === 'createdAt') {
         aVal = new Date(a.createdAt).getTime();
         bVal = new Date(b.createdAt).getTime();
+      } else if (sortField === 'outcomeMeasuredAt') {
+        // Sort by outcome measurement date, null values go to end
+        aVal = a.outcome_measured_at ? new Date(a.outcome_measured_at).getTime() : 0;
+        bVal = b.outcome_measured_at ? new Date(b.outcome_measured_at).getTime() : 0;
       } else {
         aVal = a.totalRevenue ?? 0;
         bVal = b.totalRevenue ?? 0;
@@ -185,6 +214,23 @@ export default function HistoryPage() {
     }
   };
 
+  /**
+   * Returns color for outcome tracking badges based on measured result.
+   * Colors follow the existing theme convention:
+   * - improved: green (success)
+   * - degraded: red/orange (warning)
+   * - no_change: gray (neutral)
+   * - null/pending: yellow (awaiting measurement)
+   */
+  const getOutcomeColor = (outcome: string | null) => {
+    switch (outcome) {
+      case 'improved': return isDark ? '#D7FF32' : '#4CAF50';
+      case 'degraded': return isDark ? '#FF7863' : '#E55A45';
+      case 'no_change': return isDark ? '#888888' : '#666666';
+      default: return '#FFC107';  // null = pending
+    }
+  };
+
   const formatDate = (dateStr: string) => {
     const d = new Date(dateStr);
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -193,6 +239,61 @@ export default function HistoryPage() {
   const formatTime = (dateStr: string) => {
     const d = new Date(dateStr);
     return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  };
+
+  /**
+   * Formats a date string as a human-readable relative time.
+   * Used for displaying when outcomes were measured.
+   * Returns 'Pending' for null dates (outcome not yet measured).
+   */
+  const formatRelativeTime = (dateStr: string | null) => {
+    if (!dateStr) return 'Pending';
+    const date = new Date(dateStr);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    if (diffDays === 0) return 'Today';
+    if (diffDays === 1) return 'Yesterday';
+    if (diffDays < 7) return `${diffDays} days ago`;
+    if (diffDays < 30) return `${Math.floor(diffDays / 7)} weeks ago`;
+    return `${Math.floor(diffDays / 30)} months ago`;
+  };
+
+  /**
+   * Fetches Difference-in-Differences analysis data for an action record.
+   * Calls the outcome-analysis endpoint to retrieve pre/post period metrics
+   * and matched cohort comparison data per Section 0.7.1.
+   */
+  const fetchDetailData = useCallback(async (recordId: string, subId: string) => {
+    try {
+      const res = await fetch(`/api/actions/${recordId}/outcome-analysis`);
+      if (res.ok) {
+        const data = await res.json();
+        setDetailData(prev => ({ ...prev, [recordId]: data.analysis }));
+      } else {
+        // If endpoint returns error, set null to indicate no data available
+        setDetailData(prev => ({ ...prev, [recordId]: null }));
+      }
+    } catch (err) {
+      console.error('Failed to load outcome analysis detail:', err);
+      setDetailData(prev => ({ ...prev, [recordId]: null }));
+    }
+  }, []);
+
+  /**
+   * Toggles expanded state for a row and fetches DiD analysis data if needed.
+   * Lazy loads detail data only when row is expanded for the first time.
+   */
+  const toggleExpandRow = (recordId: string, subId: string) => {
+    if (expandedRowId === recordId) {
+      setExpandedRowId(null);
+    } else {
+      setExpandedRowId(recordId);
+      // Lazy load detail data only if not already fetched
+      if (detailData[recordId] === undefined) {
+        fetchDetailData(recordId, subId);
+      }
+    }
   };
 
   const cardStyle: React.CSSProperties = {
@@ -511,6 +612,7 @@ export default function HistoryPage() {
                   <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 600, color: theme.colors.text.secondary, borderBottom: `1px solid ${isDark ? '#333' : '#e0e0e0'}` }}>Sub ID</th>
                   <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 600, color: theme.colors.text.secondary, borderBottom: `1px solid ${isDark ? '#333' : '#e0e0e0'}` }}>Vertical / Traffic</th>
                   <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 600, color: theme.colors.text.secondary, borderBottom: `1px solid ${isDark ? '#333' : '#e0e0e0'}` }}>Action</th>
+                  <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 600, color: theme.colors.text.secondary, borderBottom: `1px solid ${isDark ? '#333' : '#e0e0e0'}` }}>Outcome</th>
                   <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 600, color: theme.colors.text.secondary, borderBottom: `1px solid ${isDark ? '#333' : '#e0e0e0'}` }}>State Change</th>
                   <th style={{ padding: '12px 16px', textAlign: 'right', fontWeight: 600, color: theme.colors.text.secondary, borderBottom: `1px solid ${isDark ? '#333' : '#e0e0e0'}` }}>Revenue</th>
                   <th style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 600, color: theme.colors.text.secondary, borderBottom: `1px solid ${isDark ? '#333' : '#e0e0e0'}` }}>Logged By</th>
@@ -519,103 +621,267 @@ export default function HistoryPage() {
               </thead>
               <tbody>
                 {filteredHistory.map((record, idx) => (
-                  <tr 
-                    key={record.id}
-                    style={{ 
-                      background: idx % 2 === 0 ? 'transparent' : (isDark ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.02)'),
-                      transition: 'background 0.15s'
-                    }}
-                    onMouseEnter={e => e.currentTarget.style.background = isDark ? 'rgba(190,160,254,0.08)' : 'rgba(118,75,162,0.05)'}
-                    onMouseLeave={e => e.currentTarget.style.background = idx % 2 === 0 ? 'transparent' : (isDark ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.02)')}
-                  >
-                    <td style={{ padding: '12px 16px', borderBottom: `1px solid ${isDark ? '#2a2a2a' : '#f0f0f0'}` }}>
-                      <div style={{ fontWeight: 500 }}>{formatDate(record.createdAt)}</div>
-                      <div style={{ fontSize: '11px', color: theme.colors.text.tertiary }}>{formatTime(record.createdAt)}</div>
-                    </td>
-                    <td style={{ padding: '12px 16px', borderBottom: `1px solid ${isDark ? '#2a2a2a' : '#f0f0f0'}` }}>
-                      <span style={{ 
-                        fontFamily: 'monospace', 
-                        fontSize: '12px',
-                        background: isDark ? '#2a2a2a' : '#f0f0f0',
-                        padding: '2px 6px',
-                        borderRadius: '4px'
-                      }}>
-                        {record.subId}
-                      </span>
-                    </td>
-                    <td style={{ padding: '12px 16px', borderBottom: `1px solid ${isDark ? '#2a2a2a' : '#f0f0f0'}` }}>
-                      <div style={{ fontWeight: 500 }}>{record.vertical || '—'}</div>
-                      <div style={{ fontSize: '11px', color: theme.colors.text.tertiary }}>
-                        {record.trafficType || '—'}
-                        {record.mediaType && <span> • {record.mediaType}</span>}
-                      </div>
-                    </td>
-                    <td style={{ padding: '12px 16px', borderBottom: `1px solid ${isDark ? '#2a2a2a' : '#f0f0f0'}` }}>
-                      <span style={{
-                        display: 'inline-block',
-                        padding: '3px 10px',
-                        borderRadius: '4px',
-                        fontSize: '11px',
-                        fontWeight: 600,
-                        background: `${getActionColor(record.actionTaken)}22`,
-                        color: getActionColor(record.actionTaken),
-                        textTransform: 'uppercase'
-                      }}>
-                        {record.actionLabel || record.actionTaken}
-                      </span>
-                    </td>
-                    <td style={{ padding: '12px 16px', borderBottom: `1px solid ${isDark ? '#2a2a2a' : '#f0f0f0'}`, fontSize: '12px' }}>
-                      {record.previousState && record.newState ? (
-                        <span>
-                          <span style={{ color: theme.colors.text.tertiary }}>{record.previousState}</span>
-                          <span style={{ margin: '0 6px', color: theme.colors.text.tertiary }}>→</span>
-                          <span style={{ fontWeight: 500, color: getActionColor(record.actionTaken) }}>{record.newState}</span>
-                        </span>
-                      ) : (
-                        <span style={{ color: theme.colors.text.tertiary }}>—</span>
-                      )}
-                    </td>
-                    <td style={{ padding: '12px 16px', borderBottom: `1px solid ${isDark ? '#2a2a2a' : '#f0f0f0'}`, textAlign: 'right' }}>
-                      {record.totalRevenue != null ? (
-                        <span style={{ fontWeight: 600, color: isDark ? '#D7FF32' : '#4CAF50' }}>
-                          ${record.totalRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                        </span>
-                      ) : (
-                        <span style={{ color: theme.colors.text.tertiary }}>—</span>
-                      )}
-                    </td>
-                    <td style={{ padding: '12px 16px', borderBottom: `1px solid ${isDark ? '#2a2a2a' : '#f0f0f0'}` }}>
-                      {record.takenBy ? (
-                        <span style={{ 
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '4px',
-                          fontSize: '12px'
+                  <React.Fragment key={record.id}>
+                    <tr 
+                      onClick={() => toggleExpandRow(record.id, record.subId)}
+                      style={{ 
+                        cursor: 'pointer',
+                        background: expandedRowId === record.id 
+                          ? (isDark ? 'rgba(190,160,254,0.12)' : 'rgba(118,75,162,0.08)')
+                          : (idx % 2 === 0 ? 'transparent' : (isDark ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.02)')),
+                        transition: 'background 0.15s'
+                      }}
+                      onMouseEnter={e => {
+                        if (expandedRowId !== record.id) {
+                          e.currentTarget.style.background = isDark ? 'rgba(190,160,254,0.08)' : 'rgba(118,75,162,0.05)';
+                        }
+                      }}
+                      onMouseLeave={e => {
+                        if (expandedRowId !== record.id) {
+                          e.currentTarget.style.background = idx % 2 === 0 ? 'transparent' : (isDark ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.02)');
+                        }
+                      }}
+                    >
+                      <td style={{ padding: '12px 16px', borderBottom: `1px solid ${isDark ? '#2a2a2a' : '#f0f0f0'}` }}>
+                        <div style={{ fontWeight: 500 }}>{formatDate(record.createdAt)}</div>
+                        <div style={{ fontSize: '11px', color: theme.colors.text.tertiary }}>{formatTime(record.createdAt)}</div>
+                      </td>
+                      <td style={{ padding: '12px 16px', borderBottom: `1px solid ${isDark ? '#2a2a2a' : '#f0f0f0'}` }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          {expandedRowId === record.id ? (
+                            <DownOutlined style={{ fontSize: '10px', color: theme.colors.text.tertiary }} />
+                          ) : (
+                            <RightOutlined style={{ fontSize: '10px', color: theme.colors.text.tertiary }} />
+                          )}
+                          <span style={{ 
+                            fontFamily: 'monospace', 
+                            fontSize: '12px',
+                            background: isDark ? '#2a2a2a' : '#f0f0f0',
+                            padding: '2px 6px',
+                            borderRadius: '4px'
+                          }}>
+                            {record.subId}
+                          </span>
+                        </div>
+                      </td>
+                      <td style={{ padding: '12px 16px', borderBottom: `1px solid ${isDark ? '#2a2a2a' : '#f0f0f0'}` }}>
+                        <div style={{ fontWeight: 500 }}>{record.vertical || '—'}</div>
+                        <div style={{ fontSize: '11px', color: theme.colors.text.tertiary }}>
+                          {record.trafficType || '—'}
+                          {record.mediaType && <span> • {record.mediaType}</span>}
+                        </div>
+                      </td>
+                      <td style={{ padding: '12px 16px', borderBottom: `1px solid ${isDark ? '#2a2a2a' : '#f0f0f0'}` }}>
+                        <span style={{
+                          display: 'inline-block',
+                          padding: '3px 10px',
+                          borderRadius: '4px',
+                          fontSize: '11px',
+                          fontWeight: 600,
+                          background: `${getActionColor(record.actionTaken)}22`,
+                          color: getActionColor(record.actionTaken),
+                          textTransform: 'uppercase'
                         }}>
-                          <UserOutlined style={{ fontSize: '10px', color: theme.colors.text.tertiary }} />
-                          {record.takenBy}
+                          {record.actionLabel || record.actionTaken}
                         </span>
-                      ) : (
-                        <span style={{ color: theme.colors.text.tertiary, fontSize: '12px' }}>—</span>
-                      )}
-                    </td>
-                    <td style={{ padding: '12px 16px', borderBottom: `1px solid ${isDark ? '#2a2a2a' : '#f0f0f0'}`, maxWidth: '200px' }}>
-                      {record.notes ? (
-                        <span style={{ 
-                          fontSize: '12px', 
-                          color: theme.colors.text.secondary,
-                          display: 'block',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap'
-                        }} title={record.notes}>
-                          {record.notes}
-                        </span>
-                      ) : (
-                        <span style={{ color: theme.colors.text.tertiary, fontSize: '12px' }}>—</span>
-                      )}
-                    </td>
-                  </tr>
+                      </td>
+                      {/* Outcome column with badge and relative time */}
+                      <td style={{ padding: '12px 16px', borderBottom: `1px solid ${isDark ? '#2a2a2a' : '#f0f0f0'}` }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <span style={{
+                            display: 'inline-block',
+                            padding: '3px 10px',
+                            borderRadius: '4px',
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            background: `${getOutcomeColor(record.outcome)}22`,
+                            color: getOutcomeColor(record.outcome),
+                            textTransform: 'capitalize',
+                            width: 'fit-content'
+                          }}>
+                            {record.outcome ? record.outcome.replace('_', ' ') : 'Pending'}
+                          </span>
+                          <span style={{ fontSize: '10px', color: theme.colors.text.tertiary }}>
+                            {formatRelativeTime(record.outcome_measured_at)}
+                          </span>
+                        </div>
+                      </td>
+                      <td style={{ padding: '12px 16px', borderBottom: `1px solid ${isDark ? '#2a2a2a' : '#f0f0f0'}`, fontSize: '12px' }}>
+                        {record.previousState && record.newState ? (
+                          <span>
+                            <span style={{ color: theme.colors.text.tertiary }}>{record.previousState}</span>
+                            <span style={{ margin: '0 6px', color: theme.colors.text.tertiary }}>→</span>
+                            <span style={{ fontWeight: 500, color: getActionColor(record.actionTaken) }}>{record.newState}</span>
+                          </span>
+                        ) : (
+                          <span style={{ color: theme.colors.text.tertiary }}>—</span>
+                        )}
+                      </td>
+                      <td style={{ padding: '12px 16px', borderBottom: `1px solid ${isDark ? '#2a2a2a' : '#f0f0f0'}`, textAlign: 'right' }}>
+                        {record.totalRevenue != null ? (
+                          <span style={{ fontWeight: 600, color: isDark ? '#D7FF32' : '#4CAF50' }}>
+                            ${record.totalRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </span>
+                        ) : (
+                          <span style={{ color: theme.colors.text.tertiary }}>—</span>
+                        )}
+                      </td>
+                      <td style={{ padding: '12px 16px', borderBottom: `1px solid ${isDark ? '#2a2a2a' : '#f0f0f0'}` }}>
+                        {record.takenBy ? (
+                          <span style={{ 
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            fontSize: '12px'
+                          }}>
+                            <UserOutlined style={{ fontSize: '10px', color: theme.colors.text.tertiary }} />
+                            {record.takenBy}
+                          </span>
+                        ) : (
+                          <span style={{ color: theme.colors.text.tertiary, fontSize: '12px' }}>—</span>
+                        )}
+                      </td>
+                      <td style={{ padding: '12px 16px', borderBottom: `1px solid ${isDark ? '#2a2a2a' : '#f0f0f0'}`, maxWidth: '200px' }}>
+                        {record.notes ? (
+                          <span style={{ 
+                            fontSize: '12px', 
+                            color: theme.colors.text.secondary,
+                            display: 'block',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap'
+                          }} title={record.notes}>
+                            {record.notes}
+                          </span>
+                        ) : (
+                          <span style={{ color: theme.colors.text.tertiary, fontSize: '12px' }}>—</span>
+                        )}
+                      </td>
+                    </tr>
+                    {/* Expanded row detail section with Action Details, Rationale, and DiD Analysis */}
+                    {expandedRowId === record.id && (
+                      <tr>
+                        <td colSpan={9} style={{ 
+                          padding: '16px 24px',
+                          background: isDark ? 'rgba(190,160,254,0.05)' : 'rgba(118,75,162,0.03)',
+                          borderBottom: `1px solid ${isDark ? '#333' : '#e0e0e0'}`
+                        }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '24px' }}>
+                            {/* Section 1: Action Details */}
+                            <div>
+                              <h4 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '12px', color: isDark ? '#BEA0FE' : '#764BA2' }}>
+                                Action Details
+                              </h4>
+                              <div style={{ fontSize: '12px', color: theme.colors.text.secondary, lineHeight: '1.8' }}>
+                                <p style={{ margin: '0 0 4px 0' }}><strong>Sub ID:</strong> {record.subId}</p>
+                                <p style={{ margin: '0 0 4px 0' }}><strong>Vertical:</strong> {record.vertical || '—'}</p>
+                                <p style={{ margin: '0 0 4px 0' }}><strong>Traffic Type:</strong> {record.trafficType || '—'}</p>
+                                <p style={{ margin: '0 0 4px 0' }}><strong>Action:</strong> {record.actionLabel || record.actionTaken}</p>
+                                <p style={{ margin: '0 0 4px 0' }}><strong>Logged By:</strong> {record.takenBy || 'System'}</p>
+                                <p style={{ margin: 0 }}><strong>Logged At:</strong> {formatDate(record.createdAt)} {formatTime(record.createdAt)}</p>
+                              </div>
+                            </div>
+                            
+                            {/* Section 2: Notes/Rationale */}
+                            <div>
+                              <h4 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '12px', color: isDark ? '#BEA0FE' : '#764BA2' }}>
+                                Rationale / Notes
+                              </h4>
+                              <p style={{ 
+                                fontSize: '12px', 
+                                color: theme.colors.text.secondary, 
+                                whiteSpace: 'pre-wrap',
+                                margin: 0,
+                                lineHeight: '1.6'
+                              }}>
+                                {record.notes || 'No notes provided'}
+                              </p>
+                              {/* Quality metrics at time of action */}
+                              {(record.callQuality !== null || record.leadQuality !== null) && (
+                                <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${isDark ? '#333' : '#e0e0e0'}` }}>
+                                  <h5 style={{ fontSize: '11px', fontWeight: 600, marginBottom: '8px', color: theme.colors.text.tertiary, textTransform: 'uppercase' }}>
+                                    Quality at Action Time
+                                  </h5>
+                                  <div style={{ fontSize: '12px', color: theme.colors.text.secondary }}>
+                                    {record.callQuality !== null && (
+                                      <p style={{ margin: '0 0 4px 0' }}><strong>Call Quality:</strong> {(record.callQuality * 100).toFixed(1)}%</p>
+                                    )}
+                                    {record.leadQuality !== null && (
+                                      <p style={{ margin: 0 }}><strong>Lead Quality:</strong> {(record.leadQuality * 100).toFixed(1)}%</p>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                            
+                            {/* Section 3: Difference-in-Differences Analysis */}
+                            <div>
+                              <h4 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '12px', color: isDark ? '#D7FF32' : '#4CAF50' }}>
+                                Outcome Analysis (DiD)
+                              </h4>
+                              {detailData[record.id] ? (
+                                <div style={{ fontSize: '12px', color: theme.colors.text.secondary, lineHeight: '1.8' }}>
+                                  <p style={{ margin: '0 0 4px 0' }}>
+                                    <strong>Pre-Period Quality:</strong> {(detailData[record.id]!.pre_period_quality * 100).toFixed(2)}%
+                                  </p>
+                                  <p style={{ margin: '0 0 4px 0' }}>
+                                    <strong>Post-Period Quality:</strong> {(detailData[record.id]!.post_period_quality * 100).toFixed(2)}%
+                                  </p>
+                                  <p style={{ 
+                                    margin: '0 0 8px 0',
+                                    color: detailData[record.id]!.quality_delta > 0 
+                                      ? (isDark ? '#D7FF32' : '#4CAF50')
+                                      : detailData[record.id]!.quality_delta < 0
+                                        ? (isDark ? '#FF7863' : '#E55A45')
+                                        : theme.colors.text.secondary
+                                  }}>
+                                    <strong>Quality Change:</strong> {detailData[record.id]!.quality_delta > 0 ? '+' : ''}{(detailData[record.id]!.quality_delta * 100).toFixed(2)}%
+                                  </p>
+                                  <p style={{ margin: '0 0 4px 0' }}>
+                                    <strong>Revenue Impact:</strong>{' '}
+                                    <span style={{ 
+                                      color: detailData[record.id]!.revenue_delta >= 0 
+                                        ? (isDark ? '#D7FF32' : '#4CAF50')
+                                        : (isDark ? '#FF7863' : '#E55A45')
+                                    }}>
+                                      {detailData[record.id]!.revenue_delta >= 0 ? '+' : ''}${detailData[record.id]!.revenue_delta.toLocaleString()}
+                                    </span>
+                                  </p>
+                                  <p style={{ margin: '0 0 4px 0' }}>
+                                    <strong>Matched Cohort Δ:</strong> {(detailData[record.id]!.matched_cohort_delta * 100).toFixed(2)}%
+                                  </p>
+                                  <p style={{ 
+                                    margin: 0,
+                                    fontWeight: 600,
+                                    color: detailData[record.id]!.net_effect > 0 
+                                      ? (isDark ? '#D7FF32' : '#4CAF50')
+                                      : detailData[record.id]!.net_effect < 0
+                                        ? (isDark ? '#FF7863' : '#E55A45')
+                                        : theme.colors.text.secondary
+                                  }}>
+                                    <strong>Net Effect vs Cohort:</strong> {detailData[record.id]!.net_effect > 0 ? '+' : ''}{(detailData[record.id]!.net_effect * 100).toFixed(2)}%
+                                  </p>
+                                </div>
+                              ) : detailData[record.id] === null ? (
+                                <p style={{ fontSize: '12px', color: theme.colors.text.tertiary, margin: 0 }}>
+                                  No outcome analysis available for this action.
+                                </p>
+                              ) : record.outcome ? (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  <ReloadOutlined spin style={{ fontSize: '14px', color: isDark ? '#BEA0FE' : '#764BA2' }} />
+                                  <p style={{ fontSize: '12px', color: theme.colors.text.tertiary, margin: 0 }}>Loading analysis...</p>
+                                </div>
+                              ) : (
+                                <p style={{ fontSize: '12px', color: theme.colors.text.tertiary, margin: 0 }}>
+                                  Outcome not yet measured. DiD analysis requires 14-day post-action window to complete.
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                 ))}
               </tbody>
             </table>

@@ -40,6 +40,22 @@ import {
   FileTextOutlined
 } from '@ant-design/icons';
 
+// New imports for 8-tab expanded row (Section 0.3.4)
+import { PerformanceHistoryTab } from './performance-history-tab';
+import { DriverAnalysisTab } from './driver-analysis-tab';
+import { BuyerSalvageTab } from './buyer-salvage-tab';
+import { ExplainTab } from './explain-tab';
+import { LogActionModal, type ActionType } from './log-action-modal';
+import type { 
+  PerformanceHistoryData, 
+  DriverAnalysis, 
+  BuyerSalvage, 
+  ExplainPacket,
+  ClassificationResult as TypesClassificationResult,
+  ActionOutcome
+} from '@/lib/types';
+import { fetchDetailBundle, type DetailBundle } from '@/lib/api-client';
+
 interface ActionHistoryItem {
   id: string;
   subId: string;
@@ -185,6 +201,64 @@ function formatPct(value: number | null | undefined, asDecimal: boolean = false)
   return `${pct.toFixed(1)}%`;
 }
 
+/**
+ * Adapter function to convert local ClassificationResult to the type expected by LogActionModal.
+ * This bridges the gap between the UI's local ClassificationResult interface and the 
+ * TypesClassificationResult from lib/types.ts.
+ * 
+ * @param record - The local ClassificationResult from the UI
+ * @returns A TypesClassificationResult compatible with LogActionModal
+ */
+function adaptRecordForLogActionModal(record: ClassificationResult): TypesClassificationResult {
+  // Map the local action to ActionOutcome type
+  const actionMap: Record<string, ActionOutcome> = {
+    'keep_premium': 'keep',
+    'keep_premium_watch': 'keep',
+    'maintain': 'keep',
+    'upgrade_to_premium': 'promote',
+    'promote': 'promote',
+    'demote_to_standard': 'demote',
+    'demote': 'demote',
+    'demote_with_warning': 'warn_14d',
+    'warning_14_day': 'warn_14d',
+    'pause_immediate': 'pause',
+    'pause': 'pause',
+    'review': 'review',
+    'below': 'pause',
+    'correct': 'keep'
+  };
+  
+  return {
+    id: record.subId, // Use subId as identifier
+    dimension: 'sub_id' as const, // Default to sub_id dimension
+    subId: record.subId,
+    source: record.sourceName || '',
+    vertical: record.vertical,
+    trafficType: record.trafficType,
+    metrics: {
+      call_quality_rate: record.callQualityRate ?? undefined,
+      lead_transfer_rate: record.leadTransferRate ?? undefined,
+      total_revenue: record.totalRevenue,
+      calls: record.totalCalls,
+      leads: record.leadVolume,
+      paid_calls: record.paidCalls
+    },
+    classification: record.currentClassification,
+    qualityTier: record.recommendedClassification || record.currentClassification,
+    actionNeeded: record.isPaused || record.hasWarning || record.action !== 'correct',
+    actionRecommendation: actionMap[record.action] || 'keep',
+    reason: record.classificationReason || record.actionLabel,
+    rawData: {
+      callRevenue: record.callRevenue,
+      leadRevenue: record.leadRevenue,
+      clickRevenue: record.clickRevenue,
+      redirectRevenue: record.redirectRevenue,
+      callsOverThreshold: record.callsOverThreshold,
+      leadsTransferred: record.leadsTransferred
+    }
+  };
+}
+
 // Helper to derive action from a single metric classification (for single-metric mode)
 // NEW: Added relevance check to prevent over-corrective actions on non-primary metrics
 function deriveActionFromMetric(
@@ -301,6 +375,24 @@ export default function ResultsDashboard({
   const [actionNotes, setActionNotes] = useState<string>('');
   const [savingAction, setSavingAction] = useState<string | null>(null);
 
+  // New state for 8-tab expanded row (Section 0.3.4)
+  // Log Action Modal state - human-in-the-loop confirmation (Section 0.8.1)
+  const [logActionModalOpen, setLogActionModalOpen] = useState<boolean>(false);
+  const [activeLogActionRecord, setActiveLogActionRecord] = useState<ClassificationResult | null>(null);
+  
+  // Detail bundle state for lazy loading expanded row data (Section 0.8.6)
+  // Performance History tab MUST load lazily on row expand to avoid slowing main table
+  const [detailBundles, setDetailBundles] = useState<Record<string, DetailBundle>>({});
+  const [loadingBundles, setLoadingBundles] = useState<Set<string>>(new Set());
+  
+  // Current run ID for fetching detail bundles (derived from results if available)
+  const currentRunId = useMemo(() => {
+    // If we have results, try to get the run ID from the first result
+    // This assumes results are from the same analysis run
+    // The runId should be passed through context or props in a full implementation
+    return 'current-run'; // Placeholder - will be replaced with actual run ID from context
+  }, [results]);
+
   // Track active filters for AI insights display
   const activeFilters = useMemo(() => {
     const filters: string[] = [];
@@ -387,6 +479,39 @@ export default function ResultsDashboard({
       setActionNotes('');
     }
   }, [metricMode]);
+
+  /**
+   * Lazy load detail bundle when row expands (Section 0.8.6).
+   * Fetches Performance History, Driver Analysis, Buyer Salvage, and Explain Packet
+   * for the expanded row tabs. This MUST NOT slow the main table rendering.
+   * 
+   * @param subid - The sub ID to fetch detail bundle for
+   */
+  const loadDetailBundle = useCallback(async (subid: string) => {
+    // Skip if already loaded or currently loading
+    if (detailBundles[subid] || loadingBundles.has(subid)) return;
+    
+    // Mark as loading
+    setLoadingBundles(prev => new Set(prev).add(subid));
+    
+    try {
+      // Fetch the complete detail bundle from FastAPI backend
+      const bundle = await fetchDetailBundle(currentRunId, subid);
+      
+      // Store the bundle for this subid
+      setDetailBundles(prev => ({ ...prev, [subid]: bundle }));
+    } catch (error) {
+      // Log error but don't throw - the UI should handle missing data gracefully
+      console.error(`Failed to load detail bundle for ${subid}:`, error);
+    } finally {
+      // Remove from loading set
+      setLoadingBundles(prev => {
+        const next = new Set(prev);
+        next.delete(subid);
+        return next;
+      });
+    }
+  }, [detailBundles, loadingBundles, currentRunId]);
 
   // Fetch action history for a specific sub_id
   const fetchHistoryForSubId = useCallback(async (subId: string) => {
@@ -745,12 +870,26 @@ export default function ResultsDashboard({
     else setRevenueSortOrder('desc');
   };
 
-  const toggleRow = (subId: string) => {
+  /**
+   * Toggle row expansion and trigger lazy loading of detail bundle (Section 0.8.6).
+   * When a row is expanded, we fetch the Performance History, Driver Analysis,
+   * Buyer Salvage, and Explain Packet data for the new tabs.
+   * 
+   * @param subId - The sub ID of the row to toggle
+   */
+  const toggleRow = useCallback((subId: string) => {
     const newExpanded = new Set(expandedRows);
-    if (newExpanded.has(subId)) newExpanded.delete(subId);
-    else newExpanded.add(subId);
+    if (newExpanded.has(subId)) {
+      // Collapsing - just remove from expanded set
+      newExpanded.delete(subId);
+    } else {
+      // Expanding - add to expanded set and lazy load detail bundle
+      newExpanded.add(subId);
+      // Trigger lazy load for Performance History and other tab data
+      loadDetailBundle(subId);
+    }
     setExpandedRows(newExpanded);
-  };
+  }, [expandedRows, loadDetailBundle]);
 
   // Navigate to a specific subId - finds page, expands row, and scrolls
   const navigateToSubId = useCallback((subId: string) => {
@@ -1880,6 +2019,13 @@ export default function ResultsDashboard({
                             actionNotes={actionNotes}
                             setActionNotes={setActionNotes}
                             revenueTotals={revenueTotals}
+                            // New props for 8-tab layout (Section 0.3.4)
+                            detailBundle={detailBundles[record.subId]}
+                            loadingBundle={loadingBundles.has(record.subId)}
+                            onOpenLogActionModal={() => {
+                              setActiveLogActionRecord(record);
+                              setLogActionModalOpen(true);
+                            }}
                           />
                         </td>
                       </tr>
@@ -1947,6 +2093,25 @@ export default function ResultsDashboard({
         </div>
       </div>
       </>
+      )}
+      
+      {/* LogActionModal - Human-in-the-loop confirmation dialog (Section 0.8.1) */}
+      {/* System only recommends actions; humans confirm via this modal */}
+      {logActionModalOpen && activeLogActionRecord && (
+        <LogActionModal
+          open={logActionModalOpen}
+          onClose={() => {
+            setLogActionModalOpen(false);
+            setActiveLogActionRecord(null);
+          }}
+          record={adaptRecordForLogActionModal(activeLogActionRecord)}
+          onConfirm={(action: ActionType, notes: string, takenBy: string) => {
+            // Map ActionType to string for recordAction
+            recordAction(activeLogActionRecord, action, notes, takenBy);
+            setLogActionModalOpen(false);
+            setActiveLogActionRecord(null);
+          }}
+        />
       )}
     </div>
   );
@@ -2243,6 +2408,101 @@ function MetricBadge({ classification, label, isDark, theme }: {
   );
 }
 
+// ============================================================================
+// GuardrailBadges Component (Section 0.7.1)
+// Displays guardrail tags for classification results
+// Tags: low_volume, high_revenue_concentration, recently_acted, in_warning_window
+// ============================================================================
+
+/**
+ * GuardrailBadges - Displays guardrail tags for a classification result.
+ * These badges help operators understand the constraints and special states
+ * of each sub ID before taking action.
+ * 
+ * @param record - The classification result to display badges for
+ * @param isDark - Whether dark mode is active
+ */
+function GuardrailBadges({ record, isDark }: { record: ClassificationResult; isDark: boolean }) {
+  const badges: Array<{ label: string; color: string; tooltip: string }> = [];
+  
+  // Low volume badge (Section 0.6.4: calls >= 50 OR leads >= 100)
+  if (record.hasInsufficientVolume) {
+    badges.push({ 
+      label: 'LOW VOL', 
+      color: '#888',
+      tooltip: 'Insufficient volume for reliable classification. Calls < 50 or Leads < 100.'
+    });
+  }
+  
+  // 14-day warning badge (Section 0.6.4: warning_until = as_of_date + 14 days)
+  if (record.hasWarning) {
+    badges.push({ 
+      label: '14-DAY WARN', 
+      color: '#FBBF24',
+      tooltip: `Warning period active: ${record.warningReason || 'No auto-pause during warning window.'}`
+    });
+  }
+  
+  // Pause badge - immediate action recommended
+  if (record.isPaused) {
+    badges.push({ 
+      label: 'PAUSE', 
+      color: '#FF7863',
+      tooltip: `Pause recommended: ${record.pauseReason || 'Below minimum quality thresholds.'}`
+    });
+  }
+  
+  // Attention badge - demote with warning
+  if (record.action === 'demote_with_warning' || record.action === 'demote') {
+    badges.push({ 
+      label: 'DEMOTE', 
+      color: isDark ? '#BEA0FE' : '#764BA2',
+      tooltip: 'Consider demoting to Standard tier.'
+    });
+  }
+  
+  // Review badge for special cases
+  if (record.action === 'review' || record.isUnmapped) {
+    badges.push({ 
+      label: 'REVIEW', 
+      color: isDark ? '#60A5FA' : '#3B82F6',
+      tooltip: 'Manual review recommended - unmapped or special case.'
+    });
+  }
+  
+  // Return null if no badges
+  if (badges.length === 0) return null;
+  
+  return (
+    <div style={{ display: 'flex', gap: '4px', marginBottom: '8px', flexWrap: 'wrap' }}>
+      {badges.map((b, idx) => (
+        <span 
+          key={`${b.label}-${idx}`}
+          title={b.tooltip}
+          style={{
+            background: `${b.color}22`,
+            color: b.color,
+            padding: '2px 8px',
+            borderRadius: '4px',
+            fontSize: '10px',
+            fontWeight: 600,
+            cursor: 'help',
+            border: `1px solid ${b.color}44`
+          }}
+        >
+          {b.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// ============================================================================
+// ExpandedRowContent Component (Section 0.3.4)
+// 8-tab expanded row: Summary, Explain, Drivers, Buyer/Path to Life, 
+// Performance History, History, Notes, Log Action
+// ============================================================================
+
 function ExpandedRowContent({ 
   record, 
   theme, 
@@ -2256,7 +2516,11 @@ function ExpandedRowContent({
   savingAction,
   actionNotes,
   setActionNotes,
-  revenueTotals
+  revenueTotals,
+  // New props for 8-tab layout
+  detailBundle,
+  loadingBundle,
+  onOpenLogActionModal
 }: { 
   record: ClassificationResult; 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2272,9 +2536,15 @@ function ExpandedRowContent({
   actionNotes: string;
   setActionNotes: (notes: string) => void;
   revenueTotals: { byVertical: Record<string, number>; byVerticalTrafficType: Record<string, number> };
+  // New props for 8-tab layout (Section 0.3.4)
+  detailBundle?: DetailBundle;
+  loadingBundle: boolean;
+  onOpenLogActionModal: () => void;
 }) {
-  // Tab state for expanded row content
-  const [activeTab, setActiveTab] = useState<'quality' | 'revenue' | 'classification' | 'action'>('classification');
+  // Tab state for expanded row content - 8 tabs per Section 0.3.4
+  const [activeTab, setActiveTab] = useState<
+    'summary' | 'explain' | 'drivers' | 'buyer' | 'performance' | 'history' | 'notes' | 'logAction'
+  >('summary');
   const [actionTakerName, setActionTakerName] = useState<string>('');
   
   // Map record.action to user-friendly action for logging
@@ -2412,12 +2682,17 @@ function ExpandedRowContent({
     LEAD_MIN_VOLUME
   );
 
-  // Tab definitions
+  // Tab definitions - 8 tabs per Section 0.3.4 UI Design
+  // Order: Summary, Explain, Drivers, Buyer/Path to Life, Performance History, History, Notes, Log Action
   const tabs = [
-    { key: 'classification', label: 'Classification', icon: <ThunderboltOutlined /> },
-    { key: 'quality', label: 'Quality Metrics', icon: <BarChartOutlined /> },
-    { key: 'revenue', label: 'Revenue & Volume', icon: <LineChartOutlined /> },
-    { key: 'action', label: 'Log Action', icon: <SaveOutlined /> },
+    { key: 'summary', label: 'Summary', icon: <BarChartOutlined /> },
+    { key: 'explain', label: 'Explain', icon: <FileTextOutlined /> },
+    { key: 'drivers', label: 'Drivers', icon: <LineChartOutlined /> },
+    { key: 'buyer', label: 'Buyer / Path to Life', icon: <TeamOutlined /> },
+    { key: 'performance', label: 'Perf History', icon: <ClockCircleOutlined /> },
+    { key: 'history', label: 'History', icon: <HistoryOutlined /> },
+    { key: 'notes', label: 'Notes', icon: <FileTextOutlined /> },
+    { key: 'logAction', label: 'Log Action', icon: <SaveOutlined /> },
   ];
 
   // Get action label for dropdown
@@ -2473,7 +2748,8 @@ function ExpandedRowContent({
           >
             {tab.icon}
             {tab.label}
-            {tab.key === 'action' && actionHistory.length > 0 && (
+            {/* Show badge count for history tab */}
+            {tab.key === 'history' && actionHistory.length > 0 && (
               <span style={{ 
                 background: isDark ? '#BEA0FE22' : '#764BA222', 
                 color: isDark ? '#BEA0FE' : '#764BA2',
@@ -2485,12 +2761,25 @@ function ExpandedRowContent({
                 {actionHistory.length}
               </span>
             )}
+            {/* Show loading indicator for performance tab */}
+            {tab.key === 'performance' && loadingBundle && (
+              <span style={{ 
+                color: theme.colors.text.tertiary,
+                fontSize: '10px',
+                marginLeft: '4px'
+              }}>
+                ⏳
+              </span>
+            )}
           </button>
         ))}
       </div>
 
-      {/* TAB 1: CLASSIFICATION - Action Explanation & Metadata */}
-      {activeTab === 'classification' && (
+      {/* GuardrailBadges - Display guardrail tags at the top of expanded row */}
+      <GuardrailBadges record={record} isDark={isDark} />
+
+      {/* TAB 1: SUMMARY - Key metrics, classification decision, badges (merged from old Classification tab) */}
+      {activeTab === 'summary' && (
         <div style={{ height: TAB_CONTENT_HEIGHT, display: 'flex', flexDirection: 'column', gap: '10px' }}>
           {/* Pause Warning Banner */}
           {record.isPaused && (
@@ -2779,8 +3068,268 @@ function ExpandedRowContent({
         </div>
       )}
 
-      {/* TAB 2: QUALITY METRICS */}
-      {activeTab === 'quality' && (
+      {/* TAB 2: EXPLAIN - Audit packet visualization (Section 0.7.1) */}
+      {activeTab === 'explain' && (
+        <div style={{ height: TAB_CONTENT_HEIGHT, display: 'flex', flexDirection: 'column', gap: '10px', overflow: 'auto' }}>
+          {loadingBundle ? (
+            <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+              <div style={{ textAlign: 'center' }}>
+                <ClockCircleOutlined style={{ fontSize: '32px', color: theme.colors.text.tertiary, marginBottom: '12px' }} />
+                <div style={{ color: theme.colors.text.secondary }}>Loading audit packet...</div>
+              </div>
+            </div>
+          ) : detailBundle?.explain ? (
+            <ExplainTab explainPacket={detailBundle.explain} />
+          ) : (
+            <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+              <div style={{ textAlign: 'center' }}>
+                <FileTextOutlined style={{ fontSize: '32px', color: theme.colors.text.tertiary, marginBottom: '12px' }} />
+                <div style={{ color: theme.colors.text.secondary }}>Audit packet not available</div>
+                <div style={{ color: theme.colors.text.tertiary, fontSize: '11px', marginTop: '4px' }}>
+                  The explain data will be available once the backend processes the analysis.
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TAB 3: DRIVERS - Mix shift vs true degradation decomposition (Section 0.7.1) */}
+      {activeTab === 'drivers' && (
+        <div style={{ height: TAB_CONTENT_HEIGHT, display: 'flex', flexDirection: 'column', gap: '10px', overflow: 'auto' }}>
+          {loadingBundle ? (
+            <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+              <div style={{ textAlign: 'center' }}>
+                <ClockCircleOutlined style={{ fontSize: '32px', color: theme.colors.text.tertiary, marginBottom: '12px' }} />
+                <div style={{ color: theme.colors.text.secondary }}>Loading driver analysis...</div>
+              </div>
+            </div>
+          ) : detailBundle?.drivers ? (
+            <DriverAnalysisTab driverData={detailBundle.drivers} />
+          ) : (
+            <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+              <div style={{ textAlign: 'center' }}>
+                <LineChartOutlined style={{ fontSize: '32px', color: theme.colors.text.tertiary, marginBottom: '12px' }} />
+                <div style={{ color: theme.colors.text.secondary }}>Driver analysis not available</div>
+                <div style={{ color: theme.colors.text.tertiary, fontSize: '11px', marginTop: '4px' }}>
+                  Requires slice data (Feed B) to compute mix vs performance decomposition.
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TAB 4: BUYER / PATH TO LIFE - Buyer metrics + salvage simulations (Section 0.7.1) */}
+      {activeTab === 'buyer' && (
+        <div style={{ height: TAB_CONTENT_HEIGHT, display: 'flex', flexDirection: 'column', gap: '10px', overflow: 'auto' }}>
+          {loadingBundle ? (
+            <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+              <div style={{ textAlign: 'center' }}>
+                <ClockCircleOutlined style={{ fontSize: '32px', color: theme.colors.text.tertiary, marginBottom: '12px' }} />
+                <div style={{ color: theme.colors.text.secondary }}>Loading buyer analysis...</div>
+              </div>
+            </div>
+          ) : detailBundle?.buyer_salvage ? (
+            <BuyerSalvageTab buyerData={detailBundle.buyer_salvage} />
+          ) : (
+            <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+              <div style={{ textAlign: 'center' }}>
+                <TeamOutlined style={{ fontSize: '32px', color: theme.colors.text.tertiary, marginBottom: '12px' }} />
+                <div style={{ color: theme.colors.text.secondary }}>Buyer analysis not available</div>
+                <div style={{ color: theme.colors.text.tertiary, fontSize: '11px', marginTop: '4px' }}>
+                  Requires buyer data (Feed C) to compute salvage simulations.
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TAB 5: PERFORMANCE HISTORY - Time series charts (Section 0.7.4) */}
+      {/* MUST load lazily on row expand, MUST NOT slow main table rendering */}
+      {activeTab === 'performance' && (
+        <div style={{ height: TAB_CONTENT_HEIGHT, display: 'flex', flexDirection: 'column', gap: '10px', overflow: 'auto' }}>
+          {loadingBundle ? (
+            <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+              <div style={{ textAlign: 'center' }}>
+                <ClockCircleOutlined style={{ fontSize: '32px', color: theme.colors.text.tertiary, marginBottom: '12px', animation: 'spin 1s linear infinite' }} />
+                <div style={{ color: theme.colors.text.secondary }}>Loading performance history...</div>
+                <div style={{ color: theme.colors.text.tertiary, fontSize: '11px', marginTop: '4px' }}>
+                  Fetching 180-day trend series (excludes today)
+                </div>
+              </div>
+            </div>
+          ) : detailBundle?.performance_history ? (
+            <PerformanceHistoryTab historyData={detailBundle.performance_history} loading={false} />
+          ) : (
+            <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+              <div style={{ textAlign: 'center' }}>
+                <ClockCircleOutlined style={{ fontSize: '32px', color: theme.colors.text.tertiary, marginBottom: '12px' }} />
+                <div style={{ color: theme.colors.text.secondary }}>Performance history not available</div>
+                <div style={{ color: theme.colors.text.tertiary, fontSize: '11px', marginTop: '4px' }}>
+                  Historical data will be available once the backend processes trend series.
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TAB 6: HISTORY - Action history display (existing) */}
+      {activeTab === 'history' && (
+        <div style={{ height: TAB_CONTENT_HEIGHT, display: 'flex', flexDirection: 'column', gap: '10px', overflow: 'auto' }}>
+          {actionHistory.length > 0 ? (
+            <div style={{ ...cardStyle }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                <HistoryOutlined style={{ color: isDark ? '#BEA0FE' : '#764BA2' }} />
+                <span style={{ fontWeight: 600, color: theme.colors.text.primary, fontSize: '13px' }}>
+                  Action History ({actionHistory.length})
+                </span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '280px', overflow: 'auto' }}>
+                {actionHistory.map((action, idx) => (
+                  <div 
+                    key={action.id || idx}
+                    style={{
+                      padding: '10px 12px',
+                      background: theme.colors.background.secondary,
+                      borderRadius: '6px',
+                      borderLeft: `3px solid ${
+                        action.actionTaken === 'promote' ? (isDark ? '#D7FF32' : '#4CAF50')
+                        : action.actionTaken === 'pause' ? '#FF7863'
+                        : action.actionTaken === 'demote' ? (isDark ? '#BEA0FE' : '#764BA2')
+                        : theme.colors.border
+                      }`
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <div>
+                        <span style={{ 
+                          fontWeight: 600, 
+                          color: action.actionTaken === 'promote' ? (isDark ? '#D7FF32' : '#4CAF50')
+                            : action.actionTaken === 'pause' ? '#FF7863'
+                            : action.actionTaken === 'demote' ? (isDark ? '#BEA0FE' : '#764BA2')
+                            : theme.colors.text.primary,
+                          fontSize: '12px'
+                        }}>
+                          {action.actionLabel}
+                        </span>
+                        {action.takenBy && (
+                          <span style={{ color: theme.colors.text.tertiary, fontSize: '11px', marginLeft: '8px' }}>
+                            by {action.takenBy}
+                          </span>
+                        )}
+                      </div>
+                      <span style={{ color: theme.colors.text.tertiary, fontSize: '10px' }}>
+                        {new Date(action.createdAt).toLocaleDateString()} {new Date(action.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                    {action.notes && (
+                      <div style={{ 
+                        marginTop: '6px', 
+                        color: theme.colors.text.secondary, 
+                        fontSize: '11px',
+                        fontStyle: 'italic'
+                      }}>
+                        &quot;{action.notes}&quot;
+                      </div>
+                    )}
+                    {action.previousState && action.newState && (
+                      <div style={{ marginTop: '4px', fontSize: '10px', color: theme.colors.text.tertiary }}>
+                        {action.previousState} → {action.newState}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+              <div style={{ textAlign: 'center' }}>
+                <HistoryOutlined style={{ fontSize: '32px', color: theme.colors.text.tertiary, marginBottom: '12px' }} />
+                <div style={{ color: theme.colors.text.secondary }}>No action history yet</div>
+                <div style={{ color: theme.colors.text.tertiary, fontSize: '11px', marginTop: '4px' }}>
+                  Actions logged via the &quot;Log Action&quot; tab will appear here.
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TAB 7: NOTES - User notes textarea (existing) */}
+      {activeTab === 'notes' && (
+        <div style={{ height: TAB_CONTENT_HEIGHT, display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div style={{ ...cardStyle, flex: 1, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+              <FileTextOutlined style={{ color: isDark ? '#BEA0FE' : '#764BA2' }} />
+              <span style={{ fontWeight: 600, color: theme.colors.text.primary, fontSize: '13px' }}>
+                Notes
+              </span>
+            </div>
+            <textarea
+              placeholder="Add notes about this sub ID..."
+              value={actionNotes}
+              onChange={(e) => setActionNotes(e.target.value)}
+              style={{
+                flex: 1,
+                width: '100%',
+                padding: '12px',
+                fontSize: '12px',
+                background: theme.colors.background.secondary,
+                border: `1px solid ${theme.colors.border}`,
+                borderRadius: '6px',
+                color: theme.colors.text.primary,
+                resize: 'none',
+                minHeight: '200px'
+              }}
+            />
+            <div style={{ marginTop: '8px', fontSize: '10px', color: theme.colors.text.tertiary }}>
+              Notes are saved when you log an action.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 8: LOG ACTION - Opens modal (Section 0.8.1: humans confirm via Log Action) */}
+      {activeTab === 'logAction' && (
+        <div style={{ height: TAB_CONTENT_HEIGHT, display: 'flex', flexDirection: 'column', gap: '10px', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ ...cardStyle, textAlign: 'center', padding: '40px', maxWidth: '400px' }}>
+            <SaveOutlined style={{ fontSize: '48px', color: isDark ? '#D7FF32' : '#4CAF50', marginBottom: '16px' }} />
+            <h3 style={{ color: theme.colors.text.primary, marginBottom: '8px', fontSize: '16px' }}>
+              Log Action for {record.subId}
+            </h3>
+            <p style={{ color: theme.colors.text.secondary, marginBottom: '20px', fontSize: '12px' }}>
+              Recommended: <strong style={{ color: isDark ? '#BEA0FE' : '#764BA2' }}>{record.actionLabel}</strong>
+            </p>
+            <p style={{ color: theme.colors.text.tertiary, marginBottom: '24px', fontSize: '11px' }}>
+              Per Section 0.8.1: System only recommends actions. Humans confirm via this dialog.
+              No autonomous pause/route/bidding is performed.
+            </p>
+            <button
+              onClick={onOpenLogActionModal}
+              style={{
+                padding: '12px 32px',
+                fontSize: '14px',
+                fontWeight: 600,
+                background: isDark ? '#D7FF32' : '#4CAF50',
+                color: isDark ? '#0a0a0a' : '#fff',
+                border: 'none',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                transition: 'all 0.2s ease'
+              }}
+            >
+              Open Log Action Dialog
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* LEGACY: Quality Metrics content preserved for backward compatibility */}
+      {/* This tab is no longer in the primary navigation but kept for data reference */}
+      {activeTab === ('quality' as typeof activeTab) && (
         <div style={{ height: TAB_CONTENT_HEIGHT, display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '10px', alignContent: 'start' }}>
           {/* Call Quality Card */}
           <div style={{ 
@@ -3047,243 +3596,8 @@ function ExpandedRowContent({
         </div>
       )}
 
-      {/* TAB 3: REVENUE & VOLUME */}
-      {activeTab === 'revenue' && (
-        <div style={{ height: TAB_CONTENT_HEIGHT, display: 'flex', flexDirection: 'column', gap: '8px', overflow: 'hidden' }}>
-          {/* Section 1: Total Revenue Summary - Compact */}
-          <div style={{ 
-            ...cardStyle, 
-            padding: '10px 12px',
-            background: isDark 
-              ? 'linear-gradient(135deg, rgba(215,255,50,0.08) 0%, rgba(30,30,30,1) 100%)' 
-              : 'linear-gradient(135deg, rgba(76,175,80,0.08) 0%, rgba(255,255,255,1) 100%)',
-            borderLeft: `3px solid ${isDark ? '#D7FF32' : '#4CAF50'}`
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div>
-                <div style={{ fontSize: '9px', fontWeight: 600, color: theme.colors.text.tertiary, textTransform: 'uppercase', letterSpacing: '0.3px' }}>Total Revenue</div>
-                <div style={{ fontSize: '18px', fontWeight: 700, color: isDark ? '#D7FF32' : '#4CAF50' }}>
-                  ${(record.totalRevenue ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </div>
-              </div>
-              {/* Composition Bar - Compact */}
-              <div style={{ flex: 1, maxWidth: '280px', marginLeft: '16px' }}>
-                <div style={{ fontSize: '9px', fontWeight: 600, color: theme.colors.text.tertiary, marginBottom: '4px', textTransform: 'uppercase' }}>Revenue Mix</div>
-                {(() => {
-                  const totalRev = record.totalRevenue ?? 0;
-                  const callRev = record.callRevenue ?? 0;
-                  const leadRev = record.leadRevenue ?? 0;
-                  const clickRev = record.clickRevenue ?? 0;
-                  const redirRev = record.redirectRevenue ?? 0;
-                  if (totalRev === 0) return <div style={{ fontSize: '10px', color: theme.colors.text.tertiary }}>No revenue</div>;
-                  const callPct = (callRev / totalRev) * 100;
-                  const leadPct = (leadRev / totalRev) * 100;
-                  const clickPct = (clickRev / totalRev) * 100;
-                  const redirPct = (redirRev / totalRev) * 100;
-                  return (
-                    <>
-                      <div style={{ display: 'flex', height: '6px', borderRadius: '3px', overflow: 'hidden', background: isDark ? '#2a2a2a' : '#e0e0e0' }}>
-                        {callPct > 0 && <div style={{ width: `${callPct}%`, background: isDark ? '#D7FF32' : '#4CAF50' }} />}
-                        {leadPct > 0 && <div style={{ width: `${leadPct}%`, background: isDark ? '#FF7863' : '#E55A45' }} />}
-                        {clickPct > 0 && <div style={{ width: `${clickPct}%`, background: isDark ? '#64B5F6' : '#1976D2' }} />}
-                        {redirPct > 0 && <div style={{ width: `${redirPct}%`, background: isDark ? '#4DD0E1' : '#00ACC1' }} />}
-                      </div>
-                      <div style={{ display: 'flex', gap: '6px', marginTop: '4px', fontSize: '9px', flexWrap: 'wrap' }}>
-                        {callPct > 0 && <span><span style={{ color: isDark ? '#D7FF32' : '#4CAF50' }}>●</span> Calls {callPct.toFixed(0)}%</span>}
-                        {leadPct > 0 && <span><span style={{ color: isDark ? '#FF7863' : '#E55A45' }}>●</span> Leads {leadPct.toFixed(0)}%</span>}
-                        {clickPct > 0 && <span><span style={{ color: isDark ? '#64B5F6' : '#1976D2' }}>●</span> Clicks {clickPct.toFixed(0)}%</span>}
-                        {redirPct > 0 && <span><span style={{ color: isDark ? '#4DD0E1' : '#00ACC1' }}>●</span> Redir {redirPct.toFixed(0)}%</span>}
-                      </div>
-                    </>
-                  );
-                })()}
-              </div>
-            </div>
-          </div>
-
-          {/* Section 2: Revenue Breakdown by Type - Compact */}
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: '9px', fontWeight: 600, color: theme.colors.text.tertiary, textTransform: 'uppercase', letterSpacing: '0.3px', marginBottom: '6px' }}>Revenue by Type</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px' }}>
-              {[
-                { label: 'Calls', revenue: record.callRevenue ?? 0, volume: record.paidCalls ?? 0, rp: record.rpQCall, unit: 'calls', color: isDark ? '#D7FF32' : '#4CAF50' },
-                { label: 'Leads', revenue: record.leadRevenue ?? 0, volume: record.leadVolume ?? 0, rp: record.rpLead, unit: 'leads', color: isDark ? '#FF7863' : '#E55A45' },
-                { label: 'Clicks', revenue: record.clickRevenue ?? 0, volume: record.clickVolume ?? 0, rp: record.rpClick, unit: 'clicks', color: isDark ? '#64B5F6' : '#1976D2' },
-                { label: 'Redirects', revenue: record.redirectRevenue ?? 0, volume: record.redirectVolume ?? 0, rp: record.rpRedirect, unit: 'redir', color: isDark ? '#4DD0E1' : '#00ACC1' }
-              ].map((item, idx) => (
-                <div key={idx} style={{ ...cardStyle, padding: '8px 10px', borderLeft: `2px solid ${item.color}` }}>
-                  <div style={{ fontSize: '9px', fontWeight: 600, color: item.color, textTransform: 'uppercase' }}>{item.label}</div>
-                  <div style={{ fontSize: '13px', fontWeight: 700, color: theme.colors.text.primary, margin: '2px 0' }}>
-                    ${item.revenue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
-                  </div>
-                  <div style={{ fontSize: '9px', color: theme.colors.text.secondary }}>{item.volume.toLocaleString()} {item.unit}</div>
-                  <div style={{ fontSize: '9px', color: theme.colors.text.tertiary, marginTop: '2px', paddingTop: '2px', borderTop: `1px solid ${isDark ? '#333' : '#e0e0e0'}` }}>
-                    RP: <span style={{ color: theme.colors.text.secondary, fontWeight: 500 }}>{item.rp != null ? `$${item.rp.toFixed(2)}` : '—'}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Section 3: Portfolio Share - Compact */}
-          <div>
-            <div style={{ fontSize: '9px', fontWeight: 600, color: theme.colors.text.tertiary, textTransform: 'uppercase', letterSpacing: '0.3px', marginBottom: '6px' }}>Portfolio Context</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '6px' }}>
-              {(() => {
-                const totalRev = record.totalRevenue ?? 0;
-                const verticalTotal = revenueTotals.byVertical[record.vertical || 'Unknown'] || 0;
-                const verticalPct = verticalTotal > 0 ? (totalRev / verticalTotal) * 100 : 0;
-                const vtKey = `${record.vertical || 'Unknown'}|${record.trafficType || 'Unknown'}`;
-                const vtTotal = revenueTotals.byVerticalTrafficType[vtKey] || 0;
-                const vtPct = vtTotal > 0 ? (totalRev / vtTotal) * 100 : 0;
-                return (
-                  <>
-                    <div style={{ ...cardStyle, padding: '8px 10px', borderLeft: `2px solid ${isDark ? '#BEA0FE' : '#764BA2'}` }}>
-                      <div style={{ fontSize: '9px', fontWeight: 600, color: theme.colors.text.tertiary, textTransform: 'uppercase' }}>Share of {record.vertical || 'Vertical'}</div>
-                      <div style={{ fontSize: '14px', fontWeight: 700, color: isDark ? '#BEA0FE' : '#764BA2' }}>{verticalPct.toFixed(1)}%</div>
-                      <div style={{ fontSize: '9px', color: theme.colors.text.secondary }}>${totalRev.toLocaleString()} of ${verticalTotal.toLocaleString()}</div>
-                    </div>
-                    <div style={{ ...cardStyle, padding: '8px 10px', borderLeft: `2px solid ${isDark ? '#D7FF32' : '#4CAF50'}` }}>
-                      <div style={{ fontSize: '9px', fontWeight: 600, color: theme.colors.text.tertiary, textTransform: 'uppercase' }}>Share of {record.vertical || ''} • {record.trafficType || ''}</div>
-                      <div style={{ fontSize: '14px', fontWeight: 700, color: isDark ? '#D7FF32' : '#4CAF50' }}>{vtPct.toFixed(1)}%</div>
-                      <div style={{ fontSize: '9px', color: theme.colors.text.secondary }}>${totalRev.toLocaleString()} of ${vtTotal.toLocaleString()}</div>
-                    </div>
-                  </>
-                );
-              })()}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* TAB 4: LOG ACTION */}
-      {activeTab === 'action' && (
-        <div style={{ height: TAB_CONTENT_HEIGHT, display: 'flex', gap: '10px', overflow: 'hidden' }}>
-          {/* Action Form - Compact Layout */}
-          <div style={{ ...cardStyle, flex: '0 0 55%', padding: '10px', borderLeft: `3px solid ${isDark ? '#D7FF32' : '#4CAF50'}`, display: 'flex', flexDirection: 'column' }}>
-            {/* Header with Recommended Action inline */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px', paddingBottom: '6px', borderBottom: `1px solid ${theme.colors.border}` }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <SaveOutlined style={{ color: isDark ? '#D7FF32' : '#4CAF50', fontSize: '12px' }} />
-                <span style={{ fontWeight: 600, color: theme.colors.text.primary, fontSize: '11px' }}>Log Decision</span>
-              </div>
-              <span style={{ fontSize: '10px', padding: '2px 6px', background: isDark ? '#BEA0FE22' : '#764BA222', color: isDark ? '#BEA0FE' : '#764BA2', borderRadius: '3px', fontWeight: 600 }}>
-                Rec: {record.actionLabel}
-              </span>
-            </div>
-
-            {/* Two-column form layout */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '8px' }}>
-              {/* Action Selector */}
-              <div>
-                <label style={{ display: 'block', fontSize: '10px', color: theme.colors.text.tertiary, marginBottom: '3px' }}>Action *</label>
-                <select
-                  value={selectedAction}
-                  onChange={(e) => setSelectedAction(e.target.value)}
-                  style={{ width: '100%', padding: '6px 8px', fontSize: '11px', background: theme.colors.background.secondary, border: `1px solid ${theme.colors.border}`, borderRadius: '4px', color: theme.colors.text.primary, cursor: 'pointer' }}
-                >
-                  <option value="promote">↑ Promote</option>
-                  <option value="demote">↓ Demote</option>
-                  <option value="pause">🛑 Pause</option>
-                  <option value="below">⚠️ Below MIN</option>
-                  <option value="correct">✓ Maintain</option>
-                </select>
-              </div>
-              {/* Name Input */}
-              <div>
-                <label style={{ display: 'block', fontSize: '10px', color: theme.colors.text.tertiary, marginBottom: '3px' }}>Name *</label>
-                <input
-                  type="text"
-                  placeholder="Your name..."
-                  value={actionTakerName}
-                  onChange={(e) => setActionTakerName(e.target.value)}
-                  style={{ width: '100%', padding: '6px 8px', fontSize: '11px', background: theme.colors.background.secondary, border: `1px solid ${theme.colors.border}`, borderRadius: '4px', color: theme.colors.text.primary }}
-                />
-              </div>
-            </div>
-
-            {/* Notes Input - Compact */}
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginBottom: '8px' }}>
-              <label style={{ display: 'block', fontSize: '10px', color: theme.colors.text.tertiary, marginBottom: '3px' }}>Notes (Optional)</label>
-              <textarea
-                placeholder="Add notes..."
-                value={actionNotes}
-                onChange={(e) => setActionNotes(e.target.value)}
-                style={{ flex: 1, width: '100%', padding: '6px 8px', fontSize: '11px', background: theme.colors.background.secondary, border: `1px solid ${theme.colors.border}`, borderRadius: '4px', color: theme.colors.text.primary, resize: 'none', minHeight: '50px' }}
-              />
-            </div>
-
-            {/* Submit Button - Compact */}
-            <button
-              onClick={() => recordAction(record, selectedAction, actionNotes, actionTakerName)}
-              disabled={savingAction === record.subId || !actionTakerName.trim()}
-              style={{
-                width: '100%',
-                padding: '8px',
-                fontSize: '11px',
-                fontWeight: 600,
-                background: !actionTakerName.trim() ? theme.colors.background.secondary : (isDark ? 'linear-gradient(135deg, #BEA0FE 0%, #D7FF32 100%)' : 'linear-gradient(135deg, #764BA2 0%, #4CAF50 100%)'),
-                color: !actionTakerName.trim() ? theme.colors.text.tertiary : '#141414',
-                border: 'none',
-                borderRadius: '4px',
-                cursor: !actionTakerName.trim() ? 'not-allowed' : 'pointer',
-                opacity: savingAction === record.subId ? 0.7 : 1,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '6px'
-              }}
-            >
-              <SaveOutlined style={{ fontSize: '11px' }} />
-              {savingAction === record.subId ? 'Saving...' : 'Log Decision'}
-            </button>
-            {!actionTakerName.trim() && (
-              <div style={{ fontSize: '9px', color: isDark ? '#FF7863' : '#E55A45', marginTop: '4px', textAlign: 'center' }}>Enter name to log</div>
-            )}
-          </div>
-
-          {/* Action History - Compact */}
-          <div style={{ ...cardStyle, flex: '0 0 43%', padding: '10px', borderLeft: `3px solid ${isDark ? '#AAAAAF' : '#666666'}`, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px', paddingBottom: '6px', borderBottom: `1px solid ${theme.colors.border}` }}>
-              <HistoryOutlined style={{ color: theme.colors.text.secondary, fontSize: '12px' }} />
-              <span style={{ fontWeight: 600, color: theme.colors.text.primary, fontSize: '11px' }}>History ({actionHistory.length})</span>
-            </div>
-            {actionHistory.length === 0 ? (
-              <div style={{ color: theme.colors.text.tertiary, fontSize: '10px', fontStyle: 'italic', padding: '8px', textAlign: 'center', background: theme.colors.background.tertiary, borderRadius: '4px' }}>
-                No actions recorded yet.
-              </div>
-            ) : (
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '4px', overflowY: 'auto' }}>
-                {actionHistory.slice(0, 5).map((action) => (
-                  <div 
-                    key={action.id}
-                    style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', padding: '6px 8px', background: theme.colors.background.secondary, borderRadius: '4px', fontSize: '10px' }}
-                  >
-                    <div style={{ width: '6px', height: '6px', borderRadius: '50%', marginTop: '3px', flexShrink: 0,
-                      background: action.actionTaken === 'promote' ? (isDark ? '#D7FF32' : '#4CAF50') : action.actionTaken === 'demote' ? (isDark ? '#FFA726' : '#FF9800') : action.actionTaken === 'pause' ? (isDark ? '#FF7863' : '#E55A45') : action.actionTaken === 'below' ? (isDark ? '#BEA0FE' : '#764BA2') : theme.colors.text.secondary
-                    }} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '4px' }}>
-                        <span style={{ fontWeight: 600, color: theme.colors.text.primary, fontSize: '10px' }}>{action.actionLabel}</span>
-                        <span style={{ color: theme.colors.text.tertiary, fontSize: '9px' }}>{new Date(action.createdAt).toLocaleDateString()}</span>
-                      </div>
-                      <div style={{ color: theme.colors.text.tertiary, fontSize: '9px' }}>
-                        {action.takenBy && <span style={{ color: isDark ? '#BEA0FE' : '#764BA2' }}>{action.takenBy} • </span>}
-                        {action.previousState} → {action.newState}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-                {actionHistory.length > 5 && (
-                  <div style={{ fontSize: '9px', color: theme.colors.text.tertiary, textAlign: 'center', padding: '4px' }}>
-                    +{actionHistory.length - 5} more
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      {/* Legacy TAB 3: REVENUE & VOLUME content has been moved to Summary tab */}
+      {/* Legacy TAB 4: LOG ACTION content has been moved to logAction tab which opens modal */}
     </div>
   );
 }
